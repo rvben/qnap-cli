@@ -175,33 +175,53 @@ fn stat_output(path: &str, entry: &serde_json::Value) -> FileStatOutput {
     }
 }
 
+async fn fetch_page(client: &QnapClient, path: &str, start: usize) -> Result<Vec<FileListItem>> {
+    let limit_s = PAGE_SIZE.to_string();
+    let start_s = start.to_string();
+    let resp: FileListResponse = client
+        .get_json(
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[
+                ("func", "get_list"),
+                ("path", path),
+                ("limit", &limit_s),
+                ("start", &start_s),
+                ("type", "both"),
+                ("sortby", "filename"),
+                ("order", "ASC"),
+            ],
+        )
+        .await?;
+    check_list_status(resp.status, path)?;
+    Ok(resp
+        .datas
+        .unwrap_or_default()
+        .into_iter()
+        .map(list_item_from_entry)
+        .collect())
+}
+
+/// Case-insensitive glob match. Supports `*` (any sequence) and `?` (single char).
+fn glob_match(pattern: &[u8], name: &[u8]) -> bool {
+    match (pattern.first(), name.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => {
+            glob_match(&pattern[1..], name) || (!name.is_empty() && glob_match(pattern, &name[1..]))
+        }
+        (Some(b'?'), Some(_)) => glob_match(&pattern[1..], &name[1..]),
+        (Some(a), Some(b)) if a.eq_ignore_ascii_case(b) => glob_match(&pattern[1..], &name[1..]),
+        _ => false,
+    }
+}
+
 pub async fn list(client: &QnapClient, path: &str, all: bool, json: bool) -> Result<()> {
     let mut items: Vec<FileListItem> = Vec::new();
     let mut start = 0usize;
 
     loop {
-        let limit_s = PAGE_SIZE.to_string();
-        let start_s = start.to_string();
-        let resp: FileListResponse = client
-            .get_json(
-                "/cgi-bin/filemanager/utilRequest.cgi",
-                &[
-                    ("func", "get_list"),
-                    ("path", path),
-                    ("limit", &limit_s),
-                    ("start", &start_s),
-                    ("type", "both"),
-                    ("sortby", "filename"),
-                    ("order", "ASC"),
-                ],
-            )
-            .await?;
-
-        check_list_status(resp.status, path)?;
-
-        let page = resp.datas.unwrap_or_default();
+        let page = fetch_page(client, path, start).await?;
         let page_len = page.len();
-        items.extend(page.into_iter().map(list_item_from_entry));
+        items.extend(page);
 
         if page_len < PAGE_SIZE || !all {
             if !all && page_len == PAGE_SIZE {
@@ -226,6 +246,60 @@ pub async fn list(client: &QnapClient, path: &str, all: bool, json: bool) -> Res
 
     let rows: Vec<FileRow> = items.iter().map(human_row).collect();
     print_files(&rows);
+    Ok(())
+}
+
+pub async fn find(client: &QnapClient, root: &str, pattern: &str, json: bool) -> Result<()> {
+    #[derive(Serialize)]
+    struct FindResult {
+        path: String,
+        entry_type: String,
+        size_bytes: Option<u64>,
+        modified: Option<String>,
+    }
+
+    let pat = pattern.as_bytes();
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    queue.push_back(root.trim_end_matches('/').to_string());
+
+    let mut results: Vec<FindResult> = Vec::new();
+
+    while let Some(dir) = queue.pop_front() {
+        let mut start = 0;
+        loop {
+            let page = fetch_page(client, &dir, start).await?;
+            let page_len = page.len();
+
+            for item in page {
+                let full_path = format!("{}/{}", dir, item.name);
+                if glob_match(pat, item.name.as_bytes()) {
+                    if json {
+                        results.push(FindResult {
+                            path: full_path.clone(),
+                            entry_type: item.entry_type.clone(),
+                            size_bytes: item.size_bytes,
+                            modified: item.modified.clone(),
+                        });
+                    } else {
+                        println!("{}", full_path);
+                    }
+                }
+                if item.entry_type == "dir" {
+                    queue.push_back(full_path);
+                }
+            }
+
+            if page_len < PAGE_SIZE {
+                break;
+            }
+            start += PAGE_SIZE;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    }
+
     Ok(())
 }
 
@@ -593,6 +667,53 @@ mod tests {
         let v = serde_json::json!({"status": 99});
         let err = check_op_status(&v, "op", "/path").unwrap_err();
         assert!(err.to_string().contains("status=99"));
+    }
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(glob_match(b"foo.txt", b"foo.txt"));
+        assert!(!glob_match(b"foo.txt", b"bar.txt"));
+    }
+
+    #[test]
+    fn glob_match_star_suffix() {
+        assert!(glob_match(b"*.txt", b"notes.txt"));
+        assert!(glob_match(b"*.txt", b"a.txt"));
+        assert!(!glob_match(b"*.txt", b"notes.md"));
+    }
+
+    #[test]
+    fn glob_match_star_prefix() {
+        assert!(glob_match(b"backup*", b"backup_2024.tar.gz"));
+        assert!(glob_match(b"backup*", b"backup"));
+        assert!(!glob_match(b"backup*", b"old_backup"));
+    }
+
+    #[test]
+    fn glob_match_question_mark() {
+        assert!(glob_match(b"file?.txt", b"file1.txt"));
+        assert!(glob_match(b"file?.txt", b"fileA.txt"));
+        assert!(!glob_match(b"file?.txt", b"file10.txt"));
+    }
+
+    #[test]
+    fn glob_match_case_insensitive() {
+        assert!(glob_match(b"*.TXT", b"notes.txt"));
+        assert!(glob_match(b"*.txt", b"NOTES.TXT"));
+        assert!(glob_match(b"Backup*", b"backup_2024"));
+    }
+
+    #[test]
+    fn glob_match_star_only() {
+        assert!(glob_match(b"*", b"anything.txt"));
+        assert!(glob_match(b"*", b""));
+    }
+
+    #[test]
+    fn glob_match_multiple_stars() {
+        assert!(glob_match(b"*foo*", b"prefoo_suffix.txt"));
+        assert!(glob_match(b"*foo*", b"foo"));
+        assert!(!glob_match(b"*foo*", b"bar"));
     }
 }
 

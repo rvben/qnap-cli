@@ -82,6 +82,13 @@ enum Command {
         dir: String,
     },
 
+    /// Show current saved configuration
+    Config {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Print command schema for agent use
     Schema,
 }
@@ -162,6 +169,17 @@ enum FilesCommand {
         /// Local path to save to (defaults to filename in current directory)
         local: Option<std::path::PathBuf>,
     },
+
+    /// Search for files matching a pattern
+    Find {
+        /// Remote path to search under (e.g. /Public)
+        path: String,
+        /// Glob pattern to match filenames (e.g. "*.txt", "backup*")
+        pattern: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn password_override(password_stdin: bool) -> Result<Option<String>> {
@@ -224,6 +242,11 @@ async fn main() -> Result<()> {
 
         Command::Schema => {
             commands::schema::run();
+        }
+
+        Command::Config { json } => {
+            let config = apply_runtime_overrides(Config::load()?, &cli)?;
+            commands::config_show::run(&config, *json)?;
         }
 
         Command::Info { json } => {
@@ -299,6 +322,13 @@ async fn main() -> Result<()> {
                 }
                 FilesCommand::Download { remote, local } => {
                     commands::files::download(&client, remote, local.as_deref()).await?;
+                }
+                FilesCommand::Find {
+                    path,
+                    pattern,
+                    json,
+                } => {
+                    commands::files::find(&client, path, pattern, *json).await?;
                 }
             }
         }

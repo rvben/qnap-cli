@@ -1,3 +1,4 @@
+pub mod config_show;
 pub mod dump;
 pub mod files;
 pub mod info;

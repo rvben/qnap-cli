@@ -59,6 +59,8 @@ run         "status --json"     "$QNAP" status --json
 run         "volumes"           "$QNAP" volumes
 run         "volumes --json"    "$QNAP" volumes --json
 run         "shares"            "$QNAP" shares
+run_match   "config"            "host"   "$QNAP" config
+run_match   "config --json"     "\"host\"" "$QNAP" config --json
 run         "shares --json"     "$QNAP" shares --json
 
 echo ""
@@ -98,11 +100,14 @@ else
     fail "files download (content)" "downloaded file content mismatch"
 fi
 
-# rm individual files
-run         "files rm (file)"           "$QNAP" files rm "$SCRATCH/original_renamed.txt"
-run         "files rm (file 2)"         "$QNAP" files rm "$SCRATCH/moved_out.txt"
+# find: search by pattern
+run_match   "files find (*)"            "$SCRATCH/original_renamed.txt" "$QNAP" files find "$SCRATCH" "*renamed*"
+run_match   "files find --json"         "\"path\"" "$QNAP" files find "$SCRATCH" "*renamed*" --json
 
-# rm subdir (contains the same-name copy)
+# batch rm
+run         "files rm (batch)"          "$QNAP" files rm "$SCRATCH/original_renamed.txt" "$SCRATCH/moved_out.txt"
+
+# rm subdir (contains the same-name copy); also tests rm of a single path
 run         "files rm (dir)"            "$QNAP" files rm "$SCRATCH/subdir"
 
 echo ""
