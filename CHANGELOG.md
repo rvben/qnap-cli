@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.6](https://github.com/rvben/qnap-cli/compare/v0.1.5...v0.1.6) - 2026-03-30
+
+### Added
+
+- add network command, recursive upload/download ([af3626d](https://github.com/rvben/qnap-cli/commit/af3626df896e1b8ae6a8fe80d9ec2a8eb635dee2))
+
 ## [0.1.5](https://github.com/rvben/qnap-cli/compare/v0.1.4...v0.1.5) - 2026-03-30
 
 ### Added
