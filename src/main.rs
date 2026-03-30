@@ -4,7 +4,8 @@ mod config;
 mod output;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use client::QnapClient;
 use config::{Config, normalize_host_input, read_password_from_stdin};
@@ -98,6 +99,12 @@ enum Command {
 
     /// Print command schema for agent use
     Schema,
+
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -110,6 +117,10 @@ enum FilesCommand {
         /// Fetch all results, paginating past the 200-item default limit
         #[arg(long)]
         all: bool,
+
+        /// Recursively list all files in subdirectories
+        #[arg(long, short = 'r')]
+        recursive: bool,
 
         /// Output as JSON
         #[arg(long)]
@@ -237,8 +248,39 @@ async fn authenticated_client(
     Ok(client)
 }
 
+/// Map an error to a specific exit code for scripting.
+///
+/// 1 = general error, 2 = not found, 3 = permission denied,
+/// 4 = authentication failure, 5 = network/connection error.
+fn exit_code(err: &anyhow::Error) -> i32 {
+    let msg = format!("{:#}", err);
+    if msg.contains("failed to reach NAS") || msg.contains("error sending request") {
+        return 5;
+    }
+    if msg.contains("authentication failed")
+        || msg.contains("authPassed")
+        || msg.contains("Invalid login")
+    {
+        return 4;
+    }
+    if msg.contains("permission denied") {
+        return 3;
+    }
+    if msg.contains("path not found") || msg.contains("not found") {
+        return 2;
+    }
+    1
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("Error: {:#}", err);
+        std::process::exit(exit_code(&err));
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -255,6 +297,10 @@ async fn main() -> Result<()> {
 
         Command::Schema => {
             commands::schema::run();
+        }
+
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), "qnap", &mut std::io::stdout());
         }
 
         Command::Config { json } => {
@@ -309,8 +355,17 @@ async fn main() -> Result<()> {
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
             match action {
-                FilesCommand::Ls { path, all, json } => {
-                    commands::files::list(&client, path, *all, *json).await?;
+                FilesCommand::Ls {
+                    path,
+                    all,
+                    recursive,
+                    json,
+                } => {
+                    if *recursive {
+                        commands::files::list_recursive(&client, path, *json).await?;
+                    } else {
+                        commands::files::list(&client, path, *all, *json).await?;
+                    }
                 }
                 FilesCommand::Stat { path, json } => {
                     commands::files::stat(&client, path, *json).await?;
@@ -415,5 +470,41 @@ mod tests {
     #[test]
     fn files_rm_accepts_multiple_paths() {
         Cli::try_parse_from(["qnap", "files", "rm", "/Public/a.txt", "/Public/b.txt"]).unwrap();
+    }
+
+    #[test]
+    fn files_ls_recursive_flag_parses() {
+        Cli::try_parse_from(["qnap", "files", "ls", "-r", "/Public"]).unwrap();
+    }
+
+    #[test]
+    fn completions_parses_known_shell() {
+        Cli::try_parse_from(["qnap", "completions", "zsh"]).unwrap();
+        Cli::try_parse_from(["qnap", "completions", "bash"]).unwrap();
+        Cli::try_parse_from(["qnap", "completions", "fish"]).unwrap();
+    }
+
+    #[test]
+    fn exit_code_network_error() {
+        let err = anyhow::anyhow!("failed to reach NAS: error sending request");
+        assert_eq!(super::exit_code(&err), 5);
+    }
+
+    #[test]
+    fn exit_code_permission_denied() {
+        let err = anyhow::anyhow!("rm: permission denied: /Public/locked");
+        assert_eq!(super::exit_code(&err), 3);
+    }
+
+    #[test]
+    fn exit_code_not_found() {
+        let err = anyhow::anyhow!("path not found: /Public/missing.txt");
+        assert_eq!(super::exit_code(&err), 2);
+    }
+
+    #[test]
+    fn exit_code_general_error() {
+        let err = anyhow::anyhow!("something unexpected happened");
+        assert_eq!(super::exit_code(&err), 1);
     }
 }

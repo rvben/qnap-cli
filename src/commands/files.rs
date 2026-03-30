@@ -249,6 +249,53 @@ pub async fn list(client: &QnapClient, path: &str, all: bool, json: bool) -> Res
     Ok(())
 }
 
+pub async fn list_recursive(client: &QnapClient, root: &str, json: bool) -> Result<()> {
+    #[derive(Serialize)]
+    struct RecursiveEntry {
+        path: String,
+        entry_type: String,
+        size_bytes: Option<u64>,
+        modified: Option<String>,
+    }
+
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    queue.push_back(root.trim_end_matches('/').to_string());
+    let mut results: Vec<RecursiveEntry> = Vec::new();
+
+    while let Some(dir) = queue.pop_front() {
+        let mut start = 0;
+        loop {
+            let page = fetch_page(client, &dir, start).await?;
+            let page_len = page.len();
+            for item in page {
+                let full_path = format!("{}/{}", dir, item.name);
+                if item.entry_type == "dir" {
+                    queue.push_back(full_path.clone());
+                }
+                if json {
+                    results.push(RecursiveEntry {
+                        path: full_path,
+                        entry_type: item.entry_type,
+                        size_bytes: item.size_bytes,
+                        modified: item.modified,
+                    });
+                } else {
+                    println!("{}", full_path);
+                }
+            }
+            if page_len < PAGE_SIZE {
+                break;
+            }
+            start += PAGE_SIZE;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    }
+    Ok(())
+}
+
 pub async fn find(client: &QnapClient, root: &str, pattern: &str, json: bool) -> Result<()> {
     #[derive(Serialize)]
     struct FindResult {

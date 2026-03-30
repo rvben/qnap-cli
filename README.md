@@ -47,7 +47,7 @@ qnap files stat /Public/example.txt --json
 | `shares` | Shared folders |
 | `network` | Network adapters, IPs, MACs, DNS (`--json`) |
 | `config` | Show saved host, username, TLS settings, and file paths (`--json`) |
-| `files ls <PATH>` | List files and directories (`--all` to paginate, `--json`) |
+| `files ls <PATH>` | List files and directories (`--all`, `-r` recursive, `--json`) |
 | `files stat <PATH>` | Normalized metadata plus raw QNAP fields (`--json`) |
 | `files find <PATH> <PATTERN>` | Recursive glob search (`*.txt`, `backup*`) (`--json`) |
 | `files mkdir <PATH>` | Create a directory |
@@ -58,6 +58,7 @@ qnap files stat /Public/example.txt --json
 | `files download <REMOTE> [LOCAL]` | Download a file or directory (`-r` recursive) |
 | `dump [DIR]` | Save raw API responses for debugging |
 | `schema` | Print full command schema |
+| `completions <SHELL>` | Print shell completion script (`bash`, `zsh`, `fish`) |
 
 ## Global Flags
 
@@ -143,6 +144,25 @@ Environment variables override local files.
 - On Unix, the config directory is tightened to owner-only (`0700`) permissions.
 - Symlink and non-regular-file credential targets are rejected.
 - If you do not want local password persistence, use environment variables or `--password-stdin`.
+
+## Shell Completions
+
+Generate and install completions for your shell:
+
+```sh
+# Zsh — add to ~/.zshrc or drop in a $fpath directory
+qnap completions zsh > ~/.zfunc/_qnap
+echo 'fpath=(~/.zfunc $fpath)' >> ~/.zshrc
+echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+
+# Bash
+qnap completions bash > /etc/bash_completion.d/qnap
+# or for a user install:
+qnap completions bash > ~/.local/share/bash-completion/completions/qnap
+
+# Fish
+qnap completions fish > ~/.config/fish/completions/qnap.fish
+```
 
 ## Compatibility
 
