@@ -1,9 +1,8 @@
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::client::QnapClient;
-use crate::output::print_value;
+use crate::output::{ShareRow, print_shares};
 
 #[derive(Debug, Deserialize)]
 struct ShareEntry {
@@ -20,17 +19,41 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         )
         .await?;
 
-    let items: Vec<Value> = entries
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.text,
-                "path": e.id,
-                "items": e.real_total,
-            })
+    let rows: Vec<ShareRow> = entries
+        .into_iter()
+        .map(|e| ShareRow {
+            name: e.text,
+            path: e.id,
+            items: e
+                .real_total
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 
-    print_value(&Value::Array(items), json);
+    print_shares(&rows, json);
     Ok(())
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    const SHARES: &str = include_str!("../../tests/fixtures/ts-xa28a-qts52/shares.json");
+
+    #[test]
+    fn fixture_shares_parses() {
+        let entries: Vec<ShareEntry> =
+            serde_json::from_str(SHARES).expect("failed to parse shares fixture");
+        assert!(!entries.is_empty(), "no shares found in fixture");
+    }
+
+    #[test]
+    fn fixture_shares_have_id_and_name() {
+        let entries: Vec<ShareEntry> = serde_json::from_str(SHARES).unwrap();
+        for e in &entries {
+            assert!(!e.id.is_empty(), "share entry has empty id");
+            assert!(!e.text.is_empty(), "share entry has empty text");
+        }
+    }
 }

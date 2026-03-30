@@ -1,8 +1,7 @@
 use anyhow::Result;
-use serde_json::Value;
 
-use crate::client::{extract_xml_value, QnapClient};
-use crate::output::print_value;
+use crate::client::{QnapClient, extract_xml_value, format_uptime};
+use crate::output::{fmt_temp, print_kv};
 
 pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
     let body = client
@@ -12,44 +11,47 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         )
         .await?;
 
-    let fields: &[(&str, &str)] = &[
-        ("cpu_usage", "cpu_usage"),
-        ("mem_total_mb", "total_memory"),
-        ("mem_free_mb", "free_memory"),
-        ("sys_temp_c", "sys_tempc"),
-    ];
+    let mut pairs: Vec<(String, String)> = Vec::new();
 
-    let mut map = serde_json::Map::new();
-    for (key, tag) in fields {
-        if let Some(val) = extract_xml_value(&body, tag) {
-            map.insert(key.to_string(), Value::String(val));
-        }
+    if let Some(cpu) = extract_xml_value(&body, "cpu_usage") {
+        // The QNAP sysinfo API already includes the % sign in the value
+        pairs.push(("cpu_usage".into(), cpu.trim().to_string()));
     }
 
-    // Compute used memory
-    if let (Some(total), Some(free)) = (
-        extract_xml_value(&body, "total_memory")
-            .and_then(|s| s.trim().parse::<f64>().ok()),
-        extract_xml_value(&body, "free_memory")
-            .and_then(|s| s.trim().parse::<f64>().ok()),
-    ) {
-        map.insert(
-            "mem_used_mb".to_string(),
-            Value::String(format!("{:.1}", total - free)),
-        );
+    let total = extract_xml_value(&body, "total_memory").and_then(|s| s.trim().parse::<f64>().ok());
+    let free = extract_xml_value(&body, "free_memory").and_then(|s| s.trim().parse::<f64>().ok());
+
+    if let Some(t) = total {
+        pairs.push(("mem_total_mb".into(), format!("{:.0}", t)));
+    }
+    if let (Some(t), Some(f)) = (total, free) {
+        pairs.push(("mem_used_mb".into(), format!("{:.0}", t - f)));
+        pairs.push(("mem_free_mb".into(), format!("{:.0}", f)));
     }
 
-    // Uptime
-    let day = extract_xml_value(&body, "uptime_day").unwrap_or_default();
-    let hour = extract_xml_value(&body, "uptime_hour").unwrap_or_default();
-    let min = extract_xml_value(&body, "uptime_min").unwrap_or_default();
-    if !day.is_empty() {
-        map.insert(
-            "uptime".to_string(),
-            Value::String(format!("{}d {}h {}m", day, hour, min)),
-        );
+    let temp_raw = extract_xml_value(&body, "sys_tempc").unwrap_or_default();
+    if !temp_raw.is_empty() {
+        let display = if json {
+            format!("{}°C", temp_raw.trim())
+        } else {
+            fmt_temp(&temp_raw)
+        };
+        pairs.push(("temp".into(), display));
     }
 
-    print_value(&Value::Object(map), json);
+    if let Some(uptime) = format_uptime(&body) {
+        pairs.push(("uptime".into(), uptime));
+    }
+
+    if json {
+        let map: serde_json::Map<String, serde_json::Value> = pairs
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&map).unwrap_or_default());
+        return Ok(());
+    }
+
+    print_kv(&pairs);
     Ok(())
 }

@@ -1,10 +1,8 @@
 use anyhow::Result;
-use serde_json::Value;
 
-use crate::client::{extract_xml_value, QnapClient};
-use crate::output::print_value;
+use crate::client::{QnapClient, extract_xml_value};
+use crate::output::{DiskRow, VolumeRow, fmt_temp, fmt_vol_status, print_volumes};
 
-// QNAP vol_status codes from QTS firmware source
 fn vol_status_label(code: &str) -> &'static str {
     match code.trim() {
         "0" => "ready",
@@ -18,7 +16,6 @@ fn vol_status_label(code: &str) -> &'static str {
 }
 
 pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
-    // Volume list from disk manager
     let vol_body = client
         .get_cgi(
             "/cgi-bin/disk/disk_manage.cgi",
@@ -26,7 +23,6 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         )
         .await?;
 
-    // Disk hardware info from sysinfo
     let sys_body = client
         .get_cgi(
             "/cgi-bin/management/manaRequest.cgi",
@@ -35,7 +31,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         .await?;
 
     // Parse volumes from repeated <row> blocks
-    let mut volumes: Vec<Value> = Vec::new();
+    let mut volumes: Vec<VolumeRow> = Vec::new();
     let mut remaining = vol_body.as_str();
     while let Some(start) = remaining.find("<row>") {
         remaining = &remaining[start + "<row>".len()..];
@@ -44,69 +40,94 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         remaining = &remaining[end..];
 
         let status_code = extract_xml_value(block, "vol_status").unwrap_or_default();
-        let mut map = serde_json::Map::new();
-        map.insert(
-            "label".into(),
-            Value::String(
-                extract_xml_value(block, "vol_label").unwrap_or_default(),
-            ),
-        );
-        map.insert(
-            "status".into(),
-            Value::String(vol_status_label(&status_code).to_string()),
-        );
-        map.insert(
-            "pool".into(),
-            Value::String(
-                extract_xml_value(block, "poolID").unwrap_or_default(),
-            ),
-        );
-        map.insert(
-            "type".into(),
-            Value::String(
-                extract_xml_value(block, "lv_type").unwrap_or_default(),
-            ),
-        );
-        volumes.push(Value::Object(map));
+        let label = extract_xml_value(block, "vol_label").unwrap_or_default();
+        let pool = extract_xml_value(block, "poolID").unwrap_or_default();
+        let vol_type = extract_xml_value(block, "lv_type").unwrap_or_default();
+        let status_text = vol_status_label(&status_code);
+
+        volumes.push(VolumeRow {
+            label,
+            status: fmt_vol_status(status_text),
+            pool,
+            vol_type,
+        });
     }
 
-    // Parse disk hardware from sysinfo
+    // Parse installed disks from sysinfo
     let disk_count: usize = extract_xml_value(&sys_body, "disk_num")
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
 
-    let mut disks: Vec<Value> = Vec::new();
+    let mut disks: Vec<DiskRow> = Vec::new();
     for i in 1..=disk_count {
-        let installed = extract_xml_value(&sys_body, &format!("disk_installed{}", i))
-            .unwrap_or_default();
+        let installed =
+            extract_xml_value(&sys_body, &format!("disk_installed{}", i)).unwrap_or_default();
         if installed != "1" {
             continue;
         }
-        let alias = extract_xml_value(&sys_body, &format!("hd_pd_alias{}", i))
-            .unwrap_or_default();
-        let temp = extract_xml_value(&sys_body, &format!("tempc{}", i))
-            .unwrap_or_default();
-        let is_ssd = extract_xml_value(&sys_body, &format!("hd_is_ssd{}", i))
-            .unwrap_or_default();
+        let model = extract_xml_value(&sys_body, &format!("hd_pd_alias{}", i)).unwrap_or_default();
+        let temp_raw = extract_xml_value(&sys_body, &format!("tempc{}", i)).unwrap_or_default();
+        let is_ssd = extract_xml_value(&sys_body, &format!("hd_is_ssd{}", i)).unwrap_or_default();
 
-        let mut map = serde_json::Map::new();
-        map.insert("slot".into(), Value::Number(i.into()));
-        map.insert("type".into(), Value::String(alias));
-        map.insert(
-            "kind".into(),
-            Value::String(if is_ssd == "1" { "SSD" } else { "HDD" }.to_string()),
-        );
-        if !temp.is_empty() && temp != "0" {
-            map.insert("temp_c".into(), Value::String(temp));
-        }
-        disks.push(Value::Object(map));
+        let temp = if temp_raw.is_empty() || temp_raw == "0" {
+            "-".to_string()
+        } else if json {
+            format!("{}°C", temp_raw.trim())
+        } else {
+            fmt_temp(&temp_raw)
+        };
+
+        disks.push(DiskRow {
+            slot: i.to_string(),
+            model,
+            kind: if is_ssd == "1" { "SSD" } else { "HDD" }.to_string(),
+            temp,
+        });
     }
 
-    let output = serde_json::json!({
-        "volumes": volumes,
-        "disks": disks,
-    });
+    if volumes.is_empty() && !json {
+        let has_rows = vol_body.contains("<row>");
+        if has_rows {
+            eprintln!("Warning: found <row> elements but could not parse volume fields.");
+        } else {
+            eprintln!("Warning: no volumes found in API response.");
+        }
+        eprintln!("  Your firmware may use a different format than tested versions (QTS 4.3+).");
+        eprintln!("  Run `qnap dump ./debug/` and open a GitHub issue with the output.");
+    }
 
-    print_value(&output, json);
+    print_volumes(&volumes, &disks, json);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vol_status_label_ready_codes() {
+        assert_eq!(vol_status_label("0"), "ready");
+        assert_eq!(vol_status_label("-7"), "ready");
+    }
+
+    #[test]
+    fn test_vol_status_label_error_codes() {
+        assert_eq!(vol_status_label("-1"), "not ready");
+        assert_eq!(vol_status_label("-4"), "error");
+        assert_eq!(vol_status_label("-5"), "degraded");
+        assert_eq!(vol_status_label("-6"), "not active");
+    }
+
+    #[test]
+    fn test_vol_status_label_unknown() {
+        assert_eq!(vol_status_label("99"), "unknown");
+        assert_eq!(vol_status_label(""), "unknown");
+        assert_eq!(vol_status_label("abc"), "unknown");
+    }
+
+    #[test]
+    fn test_vol_status_label_trims_whitespace() {
+        assert_eq!(vol_status_label("  0  "), "ready");
+        assert_eq!(vol_status_label(" -5 "), "degraded");
+    }
 }

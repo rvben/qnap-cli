@@ -1,14 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::client::QnapClient;
 use crate::config::Config;
 
-pub async fn run(
-    host: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
-    insecure: bool,
-) -> Result<()> {
+pub async fn run(host: Option<String>, username: Option<String>, insecure: bool) -> Result<()> {
     let mut config = Config::load()?;
 
     if let Some(h) = host {
@@ -17,32 +12,36 @@ pub async fn run(
     if let Some(u) = username {
         config.username = Some(u);
     }
-    if let Some(p) = password {
-        config.password = Some(p);
-    }
     if insecure {
         config.insecure = Some(true);
     }
 
-    // Prompt for missing credentials
+    // Prompt for any missing required fields
     if config.host.is_none() {
         config.host = Some(prompt_required("Host (e.g. 192.168.1.50)")?);
     }
     if config.username.is_none() {
         config.username = Some(prompt_required("Username")?);
     }
-    if config.password.is_none() {
-        config.password = Some(prompt_password("Password")?);
-    }
 
-    // Test authentication
+    // Always prompt for password — never stored in config
+    let password = prompt_password("Password")?;
+
+    // Verify credentials against the NAS before saving
     let mut client = QnapClient::new(&config)?;
-    let sid = client
-        .login(config.username()?, config.password()?)
-        .await?;
+    let sid = client.login(config.username()?.as_str(), &password).await?;
 
+    // Persist config (without password) and save password to OS keychain
     config.save()?;
-    println!("Logged in successfully (sid={}...)", &sid[..sid.len().min(8)]);
+    Config::save_password(config.username()?.as_str(), &password)?;
+
+    let config_path = Config::path()?;
+    println!(
+        "Logged in successfully (sid={}...)",
+        &sid[..sid.len().min(8)]
+    );
+    println!("  Config:   {}", config_path.display());
+    println!("  Password: saved to system keychain");
     Ok(())
 }
 
@@ -71,4 +70,37 @@ fn prompt_required(label: &str) -> Result<String> {
 
 fn prompt_password(label: &str) -> Result<String> {
     rpassword::prompt_password(format!("{}: ", label)).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validated_host_accepts_ip() {
+        assert_eq!(validated_host("192.168.1.50").unwrap(), "192.168.1.50");
+    }
+
+    #[test]
+    fn test_validated_host_accepts_url() {
+        assert_eq!(
+            validated_host("https://nas.local").unwrap(),
+            "https://nas.local"
+        );
+    }
+
+    #[test]
+    fn test_validated_host_trims_whitespace() {
+        assert_eq!(validated_host("  192.168.1.50  ").unwrap(), "192.168.1.50");
+    }
+
+    #[test]
+    fn test_validated_host_rejects_empty() {
+        assert!(validated_host("").is_err());
+    }
+
+    #[test]
+    fn test_validated_host_rejects_whitespace_only() {
+        assert!(validated_host("   ").is_err());
+    }
 }
