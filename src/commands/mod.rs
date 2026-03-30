@@ -1,3 +1,4 @@
+pub mod dump;
 pub mod files;
 pub mod info;
 pub mod login;
