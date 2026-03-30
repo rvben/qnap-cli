@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+
+## [0.1.2](https://github.com/rvben/qnap-cli/compare/v0.1.1...v0.1.2) - 2026-03-30
+
+### Added
+
+- **files**: add mkdir, rm, mv, cp, upload, and download commands ([5225352](https://github.com/rvben/qnap-cli/commit/5225352ae3fd005407a1acef189f6b7d32debc70))
+
+### Fixed
+
+- **config**: rename config directory from qnap-cli to qnap ([cec4dfd](https://github.com/rvben/qnap-cli/commit/cec4dfd63e00ed1d1b12920090ef24a0ba98fc7e))
+- **files**: fix upload, download, rm, and cp against live QNAP API ([8788607](https://github.com/rvben/qnap-cli/commit/878860795716aadcd7d6972050e1845c6a064019))
+
 ## [0.1.1] - 2026-03-30
 
 ### Added
