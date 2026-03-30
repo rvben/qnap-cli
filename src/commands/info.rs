@@ -15,6 +15,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
     let fields: &[(&str, &str)] = &[
         ("model", "modelName"),
         ("hostname", "hostname"),
+        ("serial", "serial_number"),
         ("firmware", "version"),
         ("build", "build"),
         ("timezone", "timezone"),

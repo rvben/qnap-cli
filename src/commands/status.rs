@@ -16,6 +16,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         ("cpu_usage", "cpu_usage"),
         ("mem_total_mb", "total_memory"),
         ("mem_free_mb", "free_memory"),
+        ("sys_temp_c", "sys_tempc"),
     ];
 
     let mut map = serde_json::Map::new();
