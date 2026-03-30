@@ -28,10 +28,6 @@ enum Command {
         #[arg(long, short)]
         username: Option<String>,
 
-        /// Password (omit to be prompted)
-        #[arg(long, short)]
-        password: Option<String>,
-
         /// Skip TLS certificate verification
         #[arg(long)]
         insecure: bool,
@@ -51,7 +47,7 @@ enum Command {
         json: bool,
     },
 
-    /// List storage volumes
+    /// List storage volumes and disks
     Volumes {
         /// Output as JSON
         #[arg(long)]
@@ -71,6 +67,13 @@ enum Command {
         action: FilesCommand,
     },
 
+    /// Save raw API responses for debugging and compatibility reporting
+    Dump {
+        /// Directory to write response files into (created if it does not exist)
+        #[arg(default_value = "./qnap-dump")]
+        dir: String,
+    },
+
     /// Print command schema for agent use
     Schema,
 }
@@ -79,9 +82,13 @@ enum Command {
 enum FilesCommand {
     /// List files and directories at PATH
     Ls {
-        /// Remote path (e.g. /share/Public)
+        /// Remote path (e.g. /Public)
         #[arg(default_value = "/")]
         path: String,
+
+        /// Fetch all results, paginating past the 200-item default limit
+        #[arg(long)]
+        all: bool,
 
         /// Output as JSON
         #[arg(long)]
@@ -99,6 +106,14 @@ enum FilesCommand {
     },
 }
 
+async fn authenticated_client(config: &Config) -> Result<QnapClient> {
+    let mut client = QnapClient::new(config)?;
+    client
+        .login(&config.username()?, &config.password()?)
+        .await?;
+    Ok(client)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -107,38 +122,55 @@ async fn main() -> Result<()> {
         Command::Login {
             host,
             username,
-            password,
             insecure,
         } => {
-            commands::login::run(host, username, password, insecure).await?;
+            commands::login::run(host, username, insecure).await?;
         }
 
         Command::Schema => {
             commands::schema::run();
         }
 
-        // All other commands require an authenticated client
-        cmd => {
+        Command::Info { json } => {
             let config = Config::load()?;
-            let mut client = QnapClient::new(&config)?;
-            client
-                .login(config.username()?, config.password()?)
-                .await?;
+            let client = authenticated_client(&config).await?;
+            commands::info::run(&client, json).await?;
+        }
 
-            match cmd {
-                Command::Info { json } => commands::info::run(&client, json).await?,
-                Command::Status { json } => commands::status::run(&client, json).await?,
-                Command::Volumes { json } => commands::volumes::run(&client, json).await?,
-                Command::Shares { json } => commands::shares::run(&client, json).await?,
-                Command::Files { action } => match action {
-                    FilesCommand::Ls { path, json } => {
-                        commands::files::list(&client, &path, json).await?
-                    }
-                    FilesCommand::Stat { path, json } => {
-                        commands::files::stat(&client, &path, json).await?
-                    }
-                },
-                Command::Login { .. } | Command::Schema => unreachable!(),
+        Command::Status { json } => {
+            let config = Config::load()?;
+            let client = authenticated_client(&config).await?;
+            commands::status::run(&client, json).await?;
+        }
+
+        Command::Volumes { json } => {
+            let config = Config::load()?;
+            let client = authenticated_client(&config).await?;
+            commands::volumes::run(&client, json).await?;
+        }
+
+        Command::Shares { json } => {
+            let config = Config::load()?;
+            let client = authenticated_client(&config).await?;
+            commands::shares::run(&client, json).await?;
+        }
+
+        Command::Dump { dir } => {
+            let config = Config::load()?;
+            let client = authenticated_client(&config).await?;
+            commands::dump::run(&client, std::path::Path::new(&dir)).await?;
+        }
+
+        Command::Files { action } => {
+            let config = Config::load()?;
+            let client = authenticated_client(&config).await?;
+            match action {
+                FilesCommand::Ls { path, all, json } => {
+                    commands::files::list(&client, &path, all, json).await?;
+                }
+                FilesCommand::Stat { path, json } => {
+                    commands::files::stat(&client, &path, json).await?;
+                }
             }
         }
     }
