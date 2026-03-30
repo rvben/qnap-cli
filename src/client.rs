@@ -33,33 +33,47 @@ impl QnapClient {
     }
 
     pub async fn login(&mut self, username: &str, password: &str) -> Result<String> {
-        let hash = format!("{:x}", md5::compute(password));
-        let url = format!(
-            "{}/cgi-bin/authLogin.cgi?user={}&passwd={}&a=login",
-            self.base_url,
-            urlencoding::encode(username),
-            urlencoding::encode(&hash)
-        );
+        // QNAP QTS expects: pwd=base64(utf8(password)), sent as form POST
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let pwd = STANDARD.encode(password.as_bytes());
+        let url = format!("{}/cgi-bin/authLogin.cgi", self.base_url);
 
         let resp = self
             .http
-            .get(&url)
+            .post(&url)
+            .form(&[
+                ("user", username),
+                ("pwd", pwd.as_str()),
+                ("serviceKey", "1"),
+                ("client_app", "qnap-cli"),
+            ])
             .send()
             .await
-            .context("failed to reach NAS")?;
+            .map_err(|e| {
+                if e.to_string().contains("certificate") || e.to_string().contains("validity") {
+                    anyhow::anyhow!(
+                        "TLS certificate error — retry with `--insecure` to skip verification\n  ({})",
+                        e
+                    )
+                } else {
+                    anyhow::anyhow!("failed to reach NAS: {}", e)
+                }
+            })?;
 
         let body = resp.text().await?;
 
-        // Parse the XML-like response to extract authSid
-        let sid = extract_xml_value(&body, "authSid")
-            .context("no authSid in login response")?;
-        let passed = extract_xml_value(&body, "authPassed")
-            .unwrap_or_default();
-
+        let passed = extract_xml_value(&body, "authPassed").unwrap_or_default();
         if passed != "1" {
             let err = extract_xml_value(&body, "errorValue").unwrap_or_default();
             bail!("authentication failed (errorValue={})", err);
         }
+
+        let sid = extract_xml_value(&body, "authSid").ok_or_else(|| {
+            anyhow::anyhow!(
+                "login succeeded but no authSid in response\n\nRaw response:\n{}",
+                &body[..body.len().min(1000)]
+            )
+        })?;
 
         self.sid = Some(sid.clone());
         Ok(sid)
@@ -113,11 +127,18 @@ impl QnapClient {
 
 }
 
-/// Extract the text content of a simple XML-like tag: `<tag>content</tag>`
+/// Extract the text content of a simple XML tag, stripping any CDATA wrapper.
+///
+/// Handles both `<tag>value</tag>` and `<tag><![CDATA[value]]></tag>`.
 pub fn extract_xml_value(body: &str, tag: &str) -> Option<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
     let start = body.find(&open)? + open.len();
     let end = body[start..].find(&close)?;
-    Some(body[start..start + end].to_string())
+    let raw = &body[start..start + end];
+    let value = raw
+        .strip_prefix("<![CDATA[")
+        .and_then(|s| s.strip_suffix("]]>"))
+        .unwrap_or(raw);
+    Some(value.to_string())
 }

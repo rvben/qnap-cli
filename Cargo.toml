@@ -19,6 +19,6 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 dirs = "6"
 tabled = "0.17"
-md5 = "0.7"
+base64 = "0.22"
 urlencoding = "2"
 rpassword = "7"

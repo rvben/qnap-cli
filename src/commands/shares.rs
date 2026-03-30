@@ -1,21 +1,36 @@
 use anyhow::Result;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::client::QnapClient;
 use crate::output::print_value;
 
+#[derive(Debug, Deserialize)]
+struct ShareEntry {
+    id: String,
+    text: String,
+    real_total: Option<u64>,
+}
+
 pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
-    let resp: serde_json::Value = client
+    let entries: Vec<ShareEntry> = client
         .get_json(
-            "/api/v1/share-folders",
-            &[("limit", "100"), ("offset", "0")],
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[("func", "get_tree"), ("node", "share_root")],
         )
         .await?;
 
-    if let Some(data) = resp.get("data") {
-        print_value(data, json);
-    } else {
-        print_value(&resp, json);
-    }
+    let items: Vec<Value> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.text,
+                "path": e.id,
+                "items": e.real_total,
+            })
+        })
+        .collect();
 
+    print_value(&Value::Array(items), json);
     Ok(())
 }

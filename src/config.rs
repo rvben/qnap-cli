@@ -39,9 +39,14 @@ impl Config {
     }
 
     pub fn host(&self) -> Result<&str> {
-        self.host
+        let h = self
+            .host
             .as_deref()
-            .context("no host configured — run `qnap login` first")
+            .context("no host configured — run `qnap login` first")?;
+        if h.is_empty() {
+            anyhow::bail!("host is empty — run `qnap login` again");
+        }
+        Ok(h)
     }
 
     pub fn username(&self) -> Result<&str> {
