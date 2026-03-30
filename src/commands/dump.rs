@@ -53,11 +53,7 @@ fn anonymize_json_owners(body: &str) -> String {
         for entry in entries {
             for field in ["owner", "group"] {
                 if let Some(val) = entry.get_mut(field) {
-                    if val
-                        .as_str()
-                        .map(|s| !generic.contains(&s))
-                        .unwrap_or(false)
-                    {
+                    if val.as_str().map(|s| !generic.contains(&s)).unwrap_or(false) {
                         *val = serde_json::Value::String("user".to_string());
                     }
                 }
@@ -164,7 +160,10 @@ mod tests {
     #[test]
     fn redact_plain_tag() {
         let xml = "<foo>sensitive</foo>";
-        assert_eq!(redact_xml_tag(xml, "foo", "REDACTED"), "<foo>REDACTED</foo>");
+        assert_eq!(
+            redact_xml_tag(xml, "foo", "REDACTED"),
+            "<foo>REDACTED</foo>"
+        );
     }
 
     #[test]
@@ -180,7 +179,10 @@ mod tests {
     fn redact_preserves_surrounding_content() {
         let xml = "<a>1</a><serial_number>ABC123</serial_number><b>2</b>";
         let result = redact_xml_tag(xml, "serial_number", "REDACTED");
-        assert_eq!(result, "<a>1</a><serial_number>REDACTED</serial_number><b>2</b>");
+        assert_eq!(
+            result,
+            "<a>1</a><serial_number>REDACTED</serial_number><b>2</b>"
+        );
     }
 
     #[test]

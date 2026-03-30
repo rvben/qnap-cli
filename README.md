@@ -1,6 +1,8 @@
 # qnap
 
-A CLI for QNAP NAS management. Works well for both humans (colored tables, readable output) and AI agents (`--json` mode, `schema` command for introspection).
+A CLI for QNAP NAS management. It is designed for both interactive use and automation: human-friendly tables by default, stable JSON contracts on inspection commands, and a `schema` command for agent introspection.
+
+Supported platforms: Linux and macOS.
 
 ## Installation
 
@@ -13,32 +15,25 @@ Or build from source:
 ```sh
 git clone https://github.com/rvben/qnap-cli
 cd qnap-cli
-make install   # builds release binary and copies to ~/.local/bin/qnap
+make install
 ```
 
 ## Quick Start
 
 ```sh
-# Save credentials (password stored in OS keychain, never in config file)
-qnap login --host 192.168.1.50 --username admin
+# Save connection settings and password
+qnap login --host nas.local --username admin
 
-# Show system info
+# Inspect the NAS
 qnap info
-
-# Show live resource usage
 qnap status
-
-# List volumes and disks
 qnap volumes
-
-# List shared folders
 qnap shares
-
-# Browse files
 qnap files ls /Public
 
-# All commands support --json for structured output
+# Structured output for automation
 qnap status --json
+qnap files stat /Public/example.txt --json
 ```
 
 ## Commands
@@ -51,69 +46,98 @@ qnap status --json
 | `volumes` | Storage volumes and installed disks |
 | `shares` | Shared folders |
 | `files ls <PATH>` | List files and directories |
-| `files stat <PATH>` | Metadata for a file or directory |
-| `schema` | Print full command schema (for agent use) |
+| `files stat <PATH>` | Normalized metadata plus raw QNAP fields |
+| `dump [DIR]` | Save raw API responses for debugging |
+| `schema` | Print full command schema |
 
-### login
+## Global Flags
+
+These flags work on every authenticated command, including `login`.
+
+| Flag | Description |
+|---|---|
+| `--host <HOST>` | Override the NAS host for one command. HTTPS only. |
+| `--username <USERNAME>` | Override the username for one command. |
+| `--insecure` | Skip TLS certificate verification for one command. |
+| `--secure` | Force TLS certificate verification for one command. |
+| `--password-stdin` | Read the password from stdin. |
+
+Examples:
 
 ```sh
-qnap login [--host <HOST>] [--username <USERNAME>] [--insecure]
+printf '%s\n' 'secret-password' | qnap --password-stdin info
+qnap --host https://nas.local --username admin status
+qnap --secure volumes --json
 ```
 
-Prompts for any missing fields. The password is stored in the OS keychain — it is never written to the config file. `--insecure` skips TLS certificate verification, which is useful for QNAP's default self-signed certificates.
-
-### files ls
+## Authentication
 
 ```sh
-qnap files ls /Public
-qnap files ls /Backups/photos --json
+qnap login [--host <HOST>] [--username <USERNAME>] [--insecure | --secure]
 ```
 
-Lists up to 200 items. Paths use the share name directly (e.g. `/Public`, `/Backups`). Use `qnap shares` to see available paths.
+`qnap login` verifies the credentials before saving anything. Host, username, and the saved TLS verification preference are stored in `config.toml`. The password is stored separately in `credentials.toml`.
+
+The CLI requires HTTPS. Plain `http://` targets are rejected. If your NAS uses a self-signed certificate, use `--insecure` or `QNAP_INSECURE=1` explicitly.
+
+If you do not want local password persistence, skip `qnap login` and provide `QNAP_HOST`, `QNAP_USERNAME`, and `QNAP_PASSWORD` directly when running commands.
+
+## JSON Output
+
+The following commands support `--json` with stable, typed output:
+
+- `info`
+- `status`
+- `volumes`
+- `shares`
+- `files ls`
+- `files stat`
+
+Highlights:
+
+- `status --json` uses numeric fields such as `cpu_usage_pct`, `mem_total_mb`, and `temp_c`.
+- `volumes --json` includes `status_code`, `pool_id`, and per-disk `temp_c`.
+- `shares --json` uses `items_count` as a number.
+- `files ls --json` uses `size_bytes` and `modified_epoch`.
+- `files stat --json` returns normalized fields plus a `raw` object for unnormalized QNAP metadata.
+
+Use `qnap schema` for the full machine-readable command and output contract.
 
 ## Environment Variables
 
-All credentials and connection settings can be provided via environment variables, which take precedence over the config file and keychain. Useful for CI/CD and headless environments.
+Environment variables override local files.
 
 | Variable | Description |
 |---|---|
-| `QNAP_HOST` | NAS host (e.g. `192.168.1.50` or `https://nas.local`) |
+| `QNAP_HOST` | NAS host, for example `https://nas.local` or `nas.local` |
 | `QNAP_USERNAME` | Username |
-| `QNAP_PASSWORD` | Password (bypasses OS keychain) |
-| `QNAP_INSECURE` | Set to `1` to skip TLS certificate verification |
-| `NO_COLOR` | Set to any value to disable colored output |
+| `QNAP_PASSWORD` | Password |
+| `QNAP_INSECURE` | `1`/`true`/`yes` to skip TLS verification, `0`/`false`/`no` to force verification |
+| `NO_COLOR` | Disable colored output |
 
-## Config File
+## Stored Files
 
-Stores host, username, and the `insecure` flag. The password is **not** stored here.
+`config.toml` stores host, username, and TLS verification preference. `credentials.toml` stores the password separately in plaintext on the local machine.
 
-| Platform | Path |
-|---|---|
-| macOS | `~/Library/Application Support/qnap-cli/config.toml` |
-| Linux | `~/.config/qnap-cli/config.toml` |
-| Windows | `%APPDATA%\Roaming\qnap-cli\config.toml` |
-
-## Agent Use
-
-For AI agents, use `--json` on any command for structured output, and `qnap schema` to discover available commands and their output fields:
-
-```sh
-qnap schema          # prints full JSON schema
-qnap info --json     # structured system info
-qnap volumes --json  # volumes and disk array as JSON
-```
-
-The schema command output includes field types, enum values, error codes, and environment variable documentation.
-
-## Compatibility
-
-Tested against QTS 5.1.x and 5.2.x. The core authentication and file manager APIs have been stable since QTS 4.3. On headless Linux, use `QNAP_PASSWORD` to avoid requiring a desktop keyring service.
+| Platform | Config file | Credentials file |
+|---|---|---|
+| macOS | `~/Library/Application Support/qnap-cli/config.toml` | `~/Library/Application Support/qnap-cli/credentials.toml` |
+| Linux | `~/.config/qnap-cli/config.toml` | `~/.config/qnap-cli/credentials.toml` |
 
 ## Security
 
-- Passwords are stored in the OS keychain (macOS Keychain, Linux Secret Service / kernel keyring, Windows Credential Manager)
-- TLS verification is enabled by default; use `--insecure` or `QNAP_INSECURE=1` only for self-signed certificates on local networks
-- The `--password` flag does not exist — passwords are never passed on the command line where they would appear in process listings
+- Passwords are never accepted as CLI flags.
+- HTTPS is required for NAS connections.
+- TLS verification is enabled by default.
+- `credentials.toml` is written atomically.
+- On Unix, `credentials.toml` is restricted to owner-only (`0600`) permissions.
+- On Unix, the config directory is tightened to owner-only (`0700`) permissions.
+- Symlink and non-regular-file credential targets are rejected.
+- If you do not want local password persistence, use environment variables or `--password-stdin`.
+
+## Compatibility
+
+Tested against QTS 5.1.x and 5.2.x. The core authentication and file manager APIs have been stable since QTS 4.3, but `qnap dump` is the recommended way to capture compatibility issues from older or unusual firmware builds.
 
 ## License
 

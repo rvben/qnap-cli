@@ -132,7 +132,11 @@ mod tests {
         assert!(status.temp_c.is_some(), "temp_c missing");
         let uptime = status.uptime.expect("uptime missing");
         assert!(uptime.hours < 24, "hours out of range: {}", uptime.hours);
-        assert!(uptime.minutes < 60, "minutes out of range: {}", uptime.minutes);
+        assert!(
+            uptime.minutes < 60,
+            "minutes out of range: {}",
+            uptime.minutes
+        );
         assert!(!uptime.display.is_empty());
     }
 }

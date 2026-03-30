@@ -552,8 +552,16 @@ mod fixture_tests {
         let doc = parse_xml(SYSINFO).unwrap();
         let uptime = parse_uptime(&doc).unwrap();
         assert!(uptime.hours < 24, "hours out of range: {}", uptime.hours);
-        assert!(uptime.minutes < 60, "minutes out of range: {}", uptime.minutes);
-        assert!(uptime.seconds < 60, "seconds out of range: {}", uptime.seconds);
+        assert!(
+            uptime.minutes < 60,
+            "minutes out of range: {}",
+            uptime.minutes
+        );
+        assert!(
+            uptime.seconds < 60,
+            "seconds out of range: {}",
+            uptime.seconds
+        );
     }
 
     #[test]

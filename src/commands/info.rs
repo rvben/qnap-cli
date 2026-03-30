@@ -1,7 +1,42 @@
 use anyhow::Result;
+use serde::Serialize;
 
-use crate::client::{QnapClient, format_uptime, xml_fields_to_map};
+use crate::client::{QnapClient, Uptime, parse_uptime, parse_xml, xml_fields_to_map};
 use crate::output::print_kv;
+
+#[derive(Debug, Serialize)]
+struct UptimeOutput {
+    display: String,
+    days: u64,
+    hours: u64,
+    minutes: u64,
+    seconds: u64,
+    total_seconds: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct InfoOutput {
+    model: Option<String>,
+    hostname: Option<String>,
+    serial: Option<String>,
+    firmware: Option<String>,
+    build: Option<String>,
+    timezone: Option<String>,
+    uptime: Option<UptimeOutput>,
+}
+
+impl From<Uptime> for UptimeOutput {
+    fn from(uptime: Uptime) -> Self {
+        Self {
+            display: uptime.display(),
+            days: uptime.days,
+            hours: uptime.hours,
+            minutes: uptime.minutes,
+            seconds: uptime.seconds,
+            total_seconds: uptime.total_seconds(),
+        }
+    }
+}
 
 /// Returns a note when the firmware version is outside the tested range.
 fn firmware_compat_note(version: &str) -> Option<String> {
@@ -13,7 +48,7 @@ fn firmware_compat_note(version: &str) -> Option<String> {
     let major = parts.first().copied().unwrap_or(0);
     let minor = parts.get(1).copied().unwrap_or(0);
     if major == 0 {
-        return None; // version not available, skip
+        return None;
     }
     if major < 4 || (major == 4 && minor < 3) {
         return Some(format!(
@@ -24,6 +59,49 @@ fn firmware_compat_note(version: &str) -> Option<String> {
     None
 }
 
+fn build_info(body: &str) -> Result<InfoOutput> {
+    let doc = parse_xml(body)?;
+    let map = xml_fields_to_map(
+        &doc,
+        &[
+            ("model", "modelName"),
+            ("hostname", "hostname"),
+            ("serial", "serial_number"),
+            ("firmware", "version"),
+            ("build", "build"),
+            ("timezone", "timezone"),
+        ],
+    );
+
+    Ok(InfoOutput {
+        model: map
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        hostname: map
+            .get("hostname")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        serial: map
+            .get("serial")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        firmware: map
+            .get("firmware")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        build: map
+            .get("build")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        timezone: map
+            .get("timezone")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        uptime: parse_uptime(&doc).map(Into::into),
+    })
+}
+
 pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
     let body = client
         .get_cgi(
@@ -32,44 +110,44 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         )
         .await?;
 
-    let fields: &[(&str, &str)] = &[
-        ("model", "modelName"),
-        ("hostname", "hostname"),
-        ("serial", "serial_number"),
-        ("firmware", "version"),
-        ("build", "build"),
-        ("timezone", "timezone"),
-    ];
-
-    let mut map = xml_fields_to_map(&body, fields);
-
-    if let Some(uptime) = format_uptime(&body) {
-        map.insert("uptime".to_string(), serde_json::Value::String(uptime));
-    }
+    let info = build_info(&body)?;
 
     if !json {
-        if let Some(note) =
-            firmware_compat_note(map.get("firmware").and_then(|v| v.as_str()).unwrap_or(""))
-        {
+        if let Some(note) = info.firmware.as_deref().and_then(firmware_compat_note) {
             eprintln!("Note: {}", note);
         }
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&map).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&info).unwrap_or_default()
+        );
         return Ok(());
     }
 
-    let pairs: Vec<(String, String)> = map
-        .into_iter()
-        .map(|(k, v)| {
-            let val = match v {
-                serde_json::Value::String(s) => s,
-                other => other.to_string(),
-            };
-            (k, val)
-        })
-        .collect();
+    let mut pairs = Vec::new();
+    if let Some(value) = info.model {
+        pairs.push(("model".to_string(), value));
+    }
+    if let Some(value) = info.hostname {
+        pairs.push(("hostname".to_string(), value));
+    }
+    if let Some(value) = info.serial {
+        pairs.push(("serial".to_string(), value));
+    }
+    if let Some(value) = info.firmware {
+        pairs.push(("firmware".to_string(), value));
+    }
+    if let Some(value) = info.build {
+        pairs.push(("build".to_string(), value));
+    }
+    if let Some(value) = info.timezone {
+        pairs.push(("timezone".to_string(), value));
+    }
+    if let Some(value) = info.uptime {
+        pairs.push(("uptime".to_string(), value.display));
+    }
 
     print_kv(&pairs);
     Ok(())
@@ -101,8 +179,8 @@ mod tests {
 
     #[test]
     fn fixture_sysinfo_firmware_is_supported() {
-        use crate::client::extract_xml_value;
-        let version = extract_xml_value(SYSINFO, "version").unwrap_or_default();
+        let info = build_info(SYSINFO).unwrap();
+        let version = info.firmware.unwrap_or_default();
         assert!(
             firmware_compat_note(&version).is_none(),
             "fixture firmware {} triggered compat warning",

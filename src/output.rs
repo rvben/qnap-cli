@@ -47,8 +47,6 @@ pub fn fmt_vol_status(status: &str) -> String {
     }
 }
 
-// ── Volume output ────────────────────────────────────────────────────────────
-
 #[derive(Tabled)]
 pub struct VolumeRow {
     #[tabled(rename = "Label")]
@@ -73,40 +71,21 @@ pub struct DiskRow {
     pub temp: String,
 }
 
-pub fn print_volumes(volumes: &[VolumeRow], disks: &[DiskRow], json: bool) {
-    if json {
-        let vols: Vec<serde_json::Value> = volumes
-            .iter()
-            .map(|v| {
-                serde_json::json!({
-                    "label": v.label,
-                    "status": v.status,
-                    "pool": v.pool,
-                    "type": v.vol_type,
-                })
-            })
-            .collect();
-        let dsk: Vec<serde_json::Value> = disks
-            .iter()
-            .map(|d| {
-                serde_json::json!({
-                    "slot": d.slot,
-                    "model": d.model,
-                    "kind": d.kind,
-                    "temp": d.temp,
-                })
-            })
-            .collect();
-        let out = serde_json::json!({ "volumes": vols, "disks": dsk });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-        return;
-    }
-
+pub fn print_volumes(volumes: &[VolumeRow], disks: &[DiskRow]) {
     println!("VOLUMES");
     if volumes.is_empty() {
         println!("  (none)");
     } else {
-        println!("{}", Table::new(volumes));
+        let display_volumes: Vec<VolumeRow> = volumes
+            .iter()
+            .map(|v| VolumeRow {
+                label: v.label.clone(),
+                status: fmt_vol_status(&v.status),
+                pool: v.pool.clone(),
+                vol_type: v.vol_type.clone(),
+            })
+            .collect();
+        println!("{}", Table::new(display_volumes));
     }
 
     println!();
@@ -118,8 +97,6 @@ pub fn print_volumes(volumes: &[VolumeRow], disks: &[DiskRow], json: bool) {
     }
 }
 
-// ── Share output ─────────────────────────────────────────────────────────────
-
 #[derive(Tabled)]
 pub struct ShareRow {
     #[tabled(rename = "Name")]
@@ -130,25 +107,9 @@ pub struct ShareRow {
     pub items: String,
 }
 
-pub fn print_shares(rows: &[ShareRow], json: bool) {
-    if json {
-        let out: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "name": r.name,
-                    "path": r.path,
-                    "items": r.items,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-        return;
-    }
+pub fn print_shares(rows: &[ShareRow]) {
     println!("{}", Table::new(rows));
 }
-
-// ── File listing output ───────────────────────────────────────────────────────
 
 #[derive(Tabled)]
 pub struct FileRow {
@@ -162,22 +123,7 @@ pub struct FileRow {
     pub modified: String,
 }
 
-pub fn print_files(rows: &[FileRow], json: bool) {
-    if json {
-        let out: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "type": r.file_type,
-                    "name": r.name,
-                    "size": r.size,
-                    "modified": r.modified,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
-        return;
-    }
+pub fn print_files(rows: &[FileRow]) {
     println!("{}", Table::new(rows));
     println!("  {} item(s)", rows.len());
 }
@@ -185,8 +131,6 @@ pub fn print_files(rows: &[FileRow], json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Tests run without a TTY so use_color() returns false — no ANSI codes in output.
 
     #[test]
     fn test_fmt_temp_below_threshold() {
