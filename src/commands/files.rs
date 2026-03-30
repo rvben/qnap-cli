@@ -320,14 +320,20 @@ pub async fn rm(client: &QnapClient, path: &str) -> Result<()> {
     if name.is_empty() {
         bail!("cannot delete root path");
     }
+    // func and sid go in the URL; file params go in the POST body.
+    // file_name is the plain param name (not file_name[0]).
+    // force=1 skips the recycle bin and permanently deletes.
+    // v=2 enables background-task mode, which is required by the API.
     let resp: serde_json::Value = client
-        .get_json(
+        .post_json_fileop(
             "/cgi-bin/filemanager/utilRequest.cgi",
+            "delete",
             &[
-                ("func", "delete"),
                 ("file_total", "1"),
-                ("file_name[0]", name),
-                ("file_path[0]", parent),
+                ("file_name", name),
+                ("path", parent),
+                ("v", "2"),
+                ("force", "1"),
             ],
         )
         .await?;
@@ -409,10 +415,24 @@ pub async fn mv(client: &QnapClient, src: &str, dst: &str) -> Result<()> {
 
 pub async fn cp(client: &QnapClient, src: &str, dst: &str, overwrite: bool) -> Result<()> {
     let (src_parent, src_name) = split_path(src);
-    let (dst_parent, _) = split_path(dst);
+    let (dst_parent, dst_name) = split_path(dst);
 
     if src_name.is_empty() {
         bail!("invalid source path: {}", src);
+    }
+    if dst_name.is_empty() {
+        bail!("invalid destination path: {}", dst);
+    }
+
+    // The QNAP copy API copies to dest_path keeping the source filename.
+    // Copying within the same directory to a different name is not supported
+    // because the API can't rename during copy and a same-dir copy+rename
+    // would affect the original file.
+    if src_parent == dst_parent && src_name != dst_name {
+        bail!(
+            "copying to a different name within the same directory is not supported; \
+             copy to another directory first, then use 'files mv' to rename"
+        );
     }
 
     let resp: serde_json::Value = client
@@ -428,7 +448,29 @@ pub async fn cp(client: &QnapClient, src: &str, dst: &str, overwrite: bool) -> R
             ],
         )
         .await?;
-    check_op_status(&resp, "cp", src)
+    check_op_status(&resp, "cp", src)?;
+
+    // If the destination filename differs from the source, rename after copying.
+    // The copy API places the file under src_name in dst_parent; we wait briefly
+    // for the async copy process to complete before renaming.
+    if src_name != dst_name {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let resp: serde_json::Value = client
+            .get_json(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                &[
+                    ("func", "rename"),
+                    ("path", dst_parent),
+                    ("source_name", src_name),
+                    ("dest_name", dst_name),
+                ],
+            )
+            .await?;
+        check_op_status(&resp, "cp (rename)", dst)?;
+    }
+
+    Ok(())
 }
 
 pub async fn upload(
@@ -533,6 +575,243 @@ mod tests {
         let v = serde_json::json!({"status": 2});
         let err = check_op_status(&v, "cp", "/dst").unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn check_op_status_missing_status_field_is_ok() {
+        let v = serde_json::json!({"other": "field"});
+        assert!(check_op_status(&v, "op", "/path").is_ok());
+    }
+
+    #[test]
+    fn check_op_status_unknown_code_is_error() {
+        let v = serde_json::json!({"status": 99});
+        let err = check_op_status(&v, "op", "/path").unwrap_err();
+        assert!(err.to_string().contains("status=99"));
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use crate::client::QnapClient;
+    use wiremock::matchers::{body_string_contains, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn login_xml(sid: &str) -> String {
+        format!(
+            "<QDocRoot>\
+             <authPassed><![CDATA[1]]></authPassed>\
+             <authSid><![CDATA[{}]]></authSid>\
+             <errorValue><![CDATA[]]></errorValue>\
+             </QDocRoot>",
+            sid
+        )
+    }
+
+    async fn logged_in(server: &MockServer) -> QnapClient {
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/authLogin.cgi"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(login_xml("test-sid")))
+            .mount(server)
+            .await;
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
+        client.login("admin", "pass").await.unwrap();
+        client
+    }
+
+    // --- mkdir ---
+
+    #[tokio::test]
+    async fn mkdir_sends_createdir_with_split_path() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "createdir"))
+            .and(query_param("dest_path", "/Public"))
+            .and(query_param("dest_folder", "mydir"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        mkdir(&client, "/Public/mydir").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mkdir_propagates_permission_denied() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":20}"#))
+            .mount(&server)
+            .await;
+
+        let err = mkdir(&client, "/Public/locked").await.unwrap_err();
+        assert!(err.to_string().contains("permission denied"));
+    }
+
+    // --- rm ---
+
+    #[tokio::test]
+    async fn rm_posts_with_func_and_sid_in_url() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "delete"))
+            .and(query_param("sid", "test-sid"))
+            .and(body_string_contains("file_name=foo.txt"))
+            .and(body_string_contains("force=1"))
+            .and(body_string_contains("v=2"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":1,"pid":7}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        rm(&client, "/Public/foo.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rm_rejects_root_path() {
+        let server = MockServer::start().await;
+        // No login needed — error is returned before any HTTP call.
+        let client = QnapClient::new_for_test(server.uri()).unwrap();
+        let err = rm(&client, "/").await.unwrap_err();
+        assert!(err.to_string().contains("cannot delete root path"));
+    }
+
+    // --- mv ---
+
+    #[tokio::test]
+    async fn mv_same_dir_uses_rename_func() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "rename"))
+            .and(query_param("path", "/Public"))
+            .and(query_param("source_name", "old.txt"))
+            .and(query_param("dest_name", "new.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        mv(&client, "/Public/old.txt", "/Public/new.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mv_cross_dir_same_name_uses_move_func() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "move"))
+            .and(query_param("source_path", "/Source"))
+            .and(query_param("source_file", "file.txt"))
+            .and(query_param("dest_path", "/Dest"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        mv(&client, "/Source/file.txt", "/Dest/file.txt").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mv_cross_dir_different_name_uses_move_then_rename() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "move"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "rename"))
+            .and(query_param("source_name", "old.txt"))
+            .and(query_param("dest_name", "new.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        mv(&client, "/Source/old.txt", "/Dest/new.txt").await.unwrap();
+    }
+
+    // --- cp ---
+
+    #[tokio::test]
+    async fn cp_same_dir_different_name_is_rejected() {
+        let server = MockServer::start().await;
+        // No login needed — error is returned before any HTTP call.
+        let client = QnapClient::new_for_test(server.uri()).unwrap();
+        let err = cp(&client, "/Public/a.txt", "/Public/b.txt", false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("same directory"));
+    }
+
+    #[tokio::test]
+    async fn cp_cross_dir_same_name_sends_copy_request() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "copy"))
+            .and(query_param("source_path", "/Source"))
+            .and(query_param("source_file", "file.txt"))
+            .and(query_param("dest_path", "/Dest"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":1,"pid":5}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        cp(&client, "/Source/file.txt", "/Dest/file.txt", false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cp_cross_dir_different_name_copies_then_renames() {
+        let server = MockServer::start().await;
+        let client = logged_in(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "copy"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":1,"pid":5}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "rename"))
+            .and(query_param("source_name", "orig.txt"))
+            .and(query_param("dest_name", "copy.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":0}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        cp(&client, "/Source/orig.txt", "/Dest/copy.txt", false)
+            .await
+            .unwrap();
     }
 }
 

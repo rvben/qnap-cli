@@ -109,27 +109,35 @@ impl QnapClient {
             .as_deref()
             .context("client is not authenticated; call login first")?;
 
-        let url = format!(
+        // All parameters go in the URL; only the file goes in the multipart body.
+        // The progress param is the full destination path of the file being uploaded.
+        let progress = format!("{}/{}", dest_path.trim_end_matches('/'), filename);
+        let base = format!(
             "{}/cgi-bin/filemanager/utilRequest.cgi",
             self.base_url
         );
+        let url = reqwest::Url::parse_with_params(
+            &base,
+            &[
+                ("func", "upload"),
+                ("sid", sid),
+                ("type", "standard"),
+                ("dest_path", dest_path),
+                ("overwrite", if overwrite { "1" } else { "0" }),
+                ("progress", &progress),
+            ],
+        )
+        .context("failed to build upload URL")?;
 
         let file_part = reqwest::multipart::Part::bytes(data)
             .file_name(filename.to_string())
             .mime_str("application/octet-stream")
             .context("invalid MIME type")?;
 
-        let form = reqwest::multipart::Form::new()
-            .text("func", "upload")
-            .text("type", "1")
-            .text("dest_path", dest_path.to_string())
-            .text("progress_id", "1")
-            .text("overwrite", if overwrite { "1" } else { "0" })
-            .text("sid", sid.to_string())
-            .part("file", file_part);
+        let form = reqwest::multipart::Form::new().part("file", file_part);
 
         let resp = self
-            .send_checked(self.http.post(&url).multipart(form), "file upload")
+            .send_checked(self.http.post(url).multipart(form), "file upload")
             .await?;
         let body = resp.text().await.context("failed to read upload response")?;
         serde_json::from_str(&body)
@@ -152,6 +160,7 @@ impl QnapClient {
             self.base_url
         );
 
+        // source_total=1 is required; without it the server returns an empty zip archive.
         let resp = self
             .http
             .get(&url)
@@ -159,6 +168,7 @@ impl QnapClient {
                 ("func", "download"),
                 ("source_path", source_path),
                 ("source_file", source_file),
+                ("source_total", "1"),
                 ("sid", sid),
             ])
             .send()
@@ -187,6 +197,42 @@ impl QnapClient {
         let resp = self
             .send_checked(
                 self.http.get(&url).query(&all_params),
+                &format!("request to {}", path),
+            )
+            .await?;
+
+        let body = resp.text().await.context("failed to read JSON response")?;
+        serde_json::from_str::<T>(&body).with_context(|| {
+            format!(
+                "failed to parse JSON response from {}: {}",
+                path,
+                snippet(&body)
+            )
+        })
+    }
+
+    /// POST with func and sid in the URL query string, remaining params in the form body.
+    ///
+    /// The QNAP FileStation delete API requires this split: func/sid go in the URL,
+    /// file params (file_name, path, etc.) go in the POST body.
+    pub async fn post_json_fileop<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        path: &str,
+        func: &str,
+        body_params: &[(&str, &str)],
+    ) -> Result<T> {
+        let sid = self
+            .sid
+            .as_deref()
+            .context("client is not authenticated; call login first")?;
+
+        let base = format!("{}{}", self.base_url, path);
+        let url = reqwest::Url::parse_with_params(&base, &[("func", func), ("sid", sid)])
+            .context("failed to build URL")?;
+
+        let resp = self
+            .send_checked(
+                self.http.post(url).form(body_params),
                 &format!("request to {}", path),
             )
             .await?;
@@ -236,7 +282,7 @@ impl QnapClient {
     }
 
     #[cfg(test)]
-    fn new_for_test(base_url: String) -> Result<Self> {
+    pub(crate) fn new_for_test(base_url: String) -> Result<Self> {
         Self::build(base_url.trim_end_matches('/').to_string(), false)
     }
 }
@@ -591,6 +637,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn test_post_json_fileop_puts_func_and_sid_in_url_not_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/authLogin.cgi"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
+                "1",
+                "my-sid",
+                "",
+            )))
+            .mount(&server)
+            .await;
+
+        // func and sid must be in the URL query string, not the POST body
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/filemanager/utilRequest.cgi"))
+            .and(query_param("func", "delete"))
+            .and(query_param("sid", "my-sid"))
+            .and(body_string_contains("file_name=test.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status":1}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
+        client.login("admin", "pass").await.unwrap();
+        let resp: serde_json::Value = client
+            .post_json_fileop(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                "delete",
+                &[("file_name", "test.txt"), ("path", "/Public")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp["status"].as_u64(), Some(1));
     }
 }
 
