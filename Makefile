@@ -1,4 +1,4 @@
-.PHONY: build release test lint fmt check package verify clean install release-patch release-minor release-major
+.PHONY: build release test test-e2e lint fmt check package verify clean install release-patch release-minor release-major
 
 build:
 	cargo build
@@ -7,7 +7,10 @@ release:
 	cargo build --release
 
 test:
-	cargo test
+	cargo nextest run
+
+test-e2e: release
+	QNAP_BIN=./target/release/qnap bash tests/e2e.sh
 
 lint:
 	cargo fmt -- --check
