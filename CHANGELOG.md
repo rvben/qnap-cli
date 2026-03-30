@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.5](https://github.com/rvben/qnap-cli/compare/v0.1.4...v0.1.5) - 2026-03-30
+
+### Added
+
+- add config show and files find commands ([b87ae54](https://github.com/rvben/qnap-cli/commit/b87ae5421c42956eb67afbcab7470341c46c27d8))
+
 ## [0.1.4](https://github.com/rvben/qnap-cli/compare/v0.1.3...v0.1.4) - 2026-03-30
 
 ## [0.1.3](https://github.com/rvben/qnap-cli/compare/v0.1.2...v0.1.3) - 2026-03-30
