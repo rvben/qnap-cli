@@ -37,6 +37,8 @@ jobs:
         with:
           components: clippy
 
+      - uses: taiki-e/install-action@cargo-nextest
+
       - name: Verify Cargo.lock is up to date
         run: cargo check --locked
 
@@ -44,7 +46,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: make test
 
   target-checks:
     name: Target Check (aarch64-unknown-linux-gnu)
