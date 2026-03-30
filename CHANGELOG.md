@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.4](https://github.com/rvben/qnap-cli/compare/v0.1.3...v0.1.4) - 2026-03-30
+
 ## [0.1.3](https://github.com/rvben/qnap-cli/compare/v0.1.2...v0.1.3) - 2026-03-30
 
 ### Added
