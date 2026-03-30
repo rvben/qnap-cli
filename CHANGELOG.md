@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+
+## [0.1.3](https://github.com/rvben/qnap-cli/compare/v0.1.2...v0.1.3) - 2026-03-30
+
+### Added
+
+- **files**: batch rm, update README with all file commands ([24b1b17](https://github.com/rvben/qnap-cli/commit/24b1b17b194db959e56458e914a85e04c16abde1))
+
 ## [0.1.2](https://github.com/rvben/qnap-cli/compare/v0.1.1...v0.1.2) - 2026-03-30
 
 ### Added
