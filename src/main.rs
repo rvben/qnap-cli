@@ -111,6 +111,56 @@ enum FilesCommand {
         #[arg(long)]
         json: bool,
     },
+
+    /// Create a directory
+    Mkdir {
+        /// Remote path to create (e.g. /Public/newdir)
+        path: String,
+    },
+
+    /// Delete a file or directory
+    Rm {
+        /// Remote path to delete
+        path: String,
+    },
+
+    /// Move or rename a file or directory
+    Mv {
+        /// Source remote path
+        src: String,
+        /// Destination remote path
+        dst: String,
+    },
+
+    /// Copy a file or directory
+    Cp {
+        /// Source remote path
+        src: String,
+        /// Destination remote path
+        dst: String,
+        /// Overwrite if destination exists
+        #[arg(long)]
+        overwrite: bool,
+    },
+
+    /// Upload a local file to the NAS
+    Upload {
+        /// Local file to upload
+        local: std::path::PathBuf,
+        /// Remote directory to upload into (e.g. /Public)
+        remote_dir: String,
+        /// Overwrite if file already exists
+        #[arg(long)]
+        overwrite: bool,
+    },
+
+    /// Download a file from the NAS
+    Download {
+        /// Remote file path (e.g. /Public/file.txt)
+        remote: String,
+        /// Local path to save to (defaults to filename in current directory)
+        local: Option<std::path::PathBuf>,
+    },
 }
 
 fn password_override(password_stdin: bool) -> Result<Option<String>> {
@@ -220,6 +270,28 @@ async fn main() -> Result<()> {
                 }
                 FilesCommand::Stat { path, json } => {
                     commands::files::stat(&client, path, *json).await?;
+                }
+                FilesCommand::Mkdir { path } => {
+                    commands::files::mkdir(&client, path).await?;
+                }
+                FilesCommand::Rm { path } => {
+                    commands::files::rm(&client, path).await?;
+                }
+                FilesCommand::Mv { src, dst } => {
+                    commands::files::mv(&client, src, dst).await?;
+                }
+                FilesCommand::Cp { src, dst, overwrite } => {
+                    commands::files::cp(&client, src, dst, *overwrite).await?;
+                }
+                FilesCommand::Upload {
+                    local,
+                    remote_dir,
+                    overwrite,
+                } => {
+                    commands::files::upload(&client, local, remote_dir, *overwrite).await?;
+                }
+                FilesCommand::Download { remote, local } => {
+                    commands::files::download(&client, remote, local.as_deref()).await?;
                 }
             }
         }

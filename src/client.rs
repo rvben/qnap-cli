@@ -96,6 +96,81 @@ impl QnapClient {
         resp.text().await.context("failed to read response body")
     }
 
+    /// Upload a file to a remote directory via multipart POST.
+    pub async fn upload_file(
+        &self,
+        dest_path: &str,
+        filename: &str,
+        data: Vec<u8>,
+        overwrite: bool,
+    ) -> Result<serde_json::Value> {
+        let sid = self
+            .sid
+            .as_deref()
+            .context("client is not authenticated; call login first")?;
+
+        let url = format!(
+            "{}/cgi-bin/filemanager/utilRequest.cgi",
+            self.base_url
+        );
+
+        let file_part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")
+            .context("invalid MIME type")?;
+
+        let form = reqwest::multipart::Form::new()
+            .text("func", "upload")
+            .text("type", "1")
+            .text("dest_path", dest_path.to_string())
+            .text("progress_id", "1")
+            .text("overwrite", if overwrite { "1" } else { "0" })
+            .text("sid", sid.to_string())
+            .part("file", file_part);
+
+        let resp = self
+            .send_checked(self.http.post(&url).multipart(form), "file upload")
+            .await?;
+        let body = resp.text().await.context("failed to read upload response")?;
+        serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse upload response: {}", snippet(&body)))
+    }
+
+    /// Start a file download, returning the raw HTTP response for streaming.
+    pub async fn get_file_response(
+        &self,
+        source_path: &str,
+        source_file: &str,
+    ) -> Result<reqwest::Response> {
+        let sid = self
+            .sid
+            .as_deref()
+            .context("client is not authenticated; call login first")?;
+
+        let url = format!(
+            "{}/cgi-bin/filemanager/utilRequest.cgi",
+            self.base_url
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[
+                ("func", "download"),
+                ("source_path", source_path),
+                ("source_file", source_file),
+                ("sid", sid),
+            ])
+            .send()
+            .await
+            .map_err(map_transport_error)?;
+
+        if !resp.status().is_success() {
+            bail!("download failed with HTTP {}", resp.status());
+        }
+        Ok(resp)
+    }
+
     pub async fn get_json<T: for<'de> serde::Deserialize<'de>>(
         &self,
         path: &str,
@@ -150,7 +225,7 @@ impl QnapClient {
         let http = ClientBuilder::new()
             .danger_accept_invalid_certs(insecure)
             .cookie_store(true)
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(300))
             .build()?;
 
         Ok(Self {

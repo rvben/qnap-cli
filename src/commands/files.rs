@@ -1,5 +1,7 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::client::QnapClient;
 use crate::output::{FileRow, print_files, print_kv};
@@ -52,6 +54,35 @@ fn check_list_status(status: Option<u64>, path: &str) -> Result<()> {
         Some(5) => bail!("path not found: {}", path),
         Some(20) => bail!("permission denied: {}", path),
         Some(code) => bail!("error listing {}: status={}", path, code),
+    }
+}
+
+/// Split a remote path into (parent_dir, filename).
+///
+/// "/Backups/files/foo.txt" → ("/Backups/files", "foo.txt")
+/// "/Backups"               → ("/",              "Backups")
+fn split_path(path: &str) -> (&str, &str) {
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return ("/", "");
+    }
+    match path.rfind('/') {
+        None => ("/", path),
+        Some(0) => ("/", &path[1..]),
+        Some(i) => (&path[..i], &path[i + 1..]),
+    }
+}
+
+/// Check the status field of a mutating file operation response.
+///
+/// QNAP uses 0 or 1 to indicate success depending on firmware version.
+fn check_op_status(resp: &serde_json::Value, op: &str, path: &str) -> Result<()> {
+    match resp.get("status").and_then(|s| s.as_u64()) {
+        Some(0) | Some(1) | None => Ok(()),
+        Some(2) => bail!("{}: destination already exists: {}", op, path),
+        Some(5) => bail!("{}: path not found: {}", op, path),
+        Some(20) => bail!("{}: permission denied: {}", op, path),
+        Some(code) => bail!("{} failed for {}: status={}", op, path, code),
     }
 }
 
@@ -264,6 +295,245 @@ pub async fn stat(client: &QnapClient, path: &str, json: bool) -> Result<()> {
 
     print_kv(&pairs);
     Ok(())
+}
+
+pub async fn mkdir(client: &QnapClient, path: &str) -> Result<()> {
+    let (parent, name) = split_path(path);
+    if name.is_empty() {
+        bail!("invalid path: {}", path);
+    }
+    let resp: serde_json::Value = client
+        .get_json(
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[
+                ("func", "createdir"),
+                ("dest_path", parent),
+                ("dest_folder", name),
+            ],
+        )
+        .await?;
+    check_op_status(&resp, "mkdir", path)
+}
+
+pub async fn rm(client: &QnapClient, path: &str) -> Result<()> {
+    let (parent, name) = split_path(path);
+    if name.is_empty() {
+        bail!("cannot delete root path");
+    }
+    let resp: serde_json::Value = client
+        .get_json(
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[
+                ("func", "delete"),
+                ("file_total", "1"),
+                ("file_name[0]", name),
+                ("file_path[0]", parent),
+            ],
+        )
+        .await?;
+    check_op_status(&resp, "rm", path)
+}
+
+pub async fn mv(client: &QnapClient, src: &str, dst: &str) -> Result<()> {
+    let (src_parent, src_name) = split_path(src);
+    let (dst_parent, dst_name) = split_path(dst);
+
+    if src_name.is_empty() {
+        bail!("invalid source path: {}", src);
+    }
+    if dst_name.is_empty() {
+        bail!("invalid destination path: {}", dst);
+    }
+
+    if src_parent == dst_parent {
+        // Rename within the same directory
+        let resp: serde_json::Value = client
+            .get_json(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                &[
+                    ("func", "rename"),
+                    ("path", src_parent),
+                    ("source_name", src_name),
+                    ("dest_name", dst_name),
+                ],
+            )
+            .await?;
+        check_op_status(&resp, "mv", src)
+    } else if src_name == dst_name {
+        // Move to a different directory, keeping the same filename
+        let resp: serde_json::Value = client
+            .get_json(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                &[
+                    ("func", "move"),
+                    ("source_path", src_parent),
+                    ("source_file", src_name),
+                    ("dest_path", dst_parent),
+                    ("source_total", "1"),
+                    ("overwrite", "0"),
+                ],
+            )
+            .await?;
+        check_op_status(&resp, "mv", src)
+    } else {
+        // Move to a different directory then rename
+        let resp: serde_json::Value = client
+            .get_json(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                &[
+                    ("func", "move"),
+                    ("source_path", src_parent),
+                    ("source_file", src_name),
+                    ("dest_path", dst_parent),
+                    ("source_total", "1"),
+                    ("overwrite", "0"),
+                ],
+            )
+            .await?;
+        check_op_status(&resp, "mv", src)?;
+
+        let resp: serde_json::Value = client
+            .get_json(
+                "/cgi-bin/filemanager/utilRequest.cgi",
+                &[
+                    ("func", "rename"),
+                    ("path", dst_parent),
+                    ("source_name", src_name),
+                    ("dest_name", dst_name),
+                ],
+            )
+            .await?;
+        check_op_status(&resp, "mv (rename)", dst)
+    }
+}
+
+pub async fn cp(client: &QnapClient, src: &str, dst: &str, overwrite: bool) -> Result<()> {
+    let (src_parent, src_name) = split_path(src);
+    let (dst_parent, _) = split_path(dst);
+
+    if src_name.is_empty() {
+        bail!("invalid source path: {}", src);
+    }
+
+    let resp: serde_json::Value = client
+        .get_json(
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[
+                ("func", "copy"),
+                ("source_path", src_parent),
+                ("source_file", src_name),
+                ("dest_path", dst_parent),
+                ("source_total", "1"),
+                ("overwrite", if overwrite { "1" } else { "0" }),
+            ],
+        )
+        .await?;
+    check_op_status(&resp, "cp", src)
+}
+
+pub async fn upload(
+    client: &QnapClient,
+    local: &Path,
+    remote_dir: &str,
+    overwrite: bool,
+) -> Result<()> {
+    let filename = local
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| format!("invalid local path: {}", local.display()))?;
+
+    let data = std::fs::read(local)
+        .with_context(|| format!("failed to read {}", local.display()))?;
+
+    let resp = client.upload_file(remote_dir, filename, data, overwrite).await?;
+    check_op_status(&resp, "upload", filename)
+}
+
+pub async fn download(client: &QnapClient, remote: &str, local: Option<&Path>) -> Result<()> {
+    let (source_path, source_file) = split_path(remote);
+    if source_file.is_empty() {
+        bail!("cannot download a directory");
+    }
+
+    let resp = client.get_file_response(source_path, source_file).await?;
+
+    // Determine output destination
+    let out_path = local.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(source_file)
+    });
+
+    let mut file = std::fs::File::create(&out_path)
+        .with_context(|| format!("failed to create {}", out_path.display()))?;
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("error reading download stream")?;
+        std::io::Write::write_all(&mut file, &chunk)
+            .with_context(|| format!("failed to write to {}", out_path.display()))?;
+    }
+
+    eprintln!("  saved to {}", out_path.display());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_path_deep() {
+        assert_eq!(split_path("/Backups/files/foo.txt"), ("/Backups/files", "foo.txt"));
+    }
+
+    #[test]
+    fn split_path_share_root() {
+        assert_eq!(split_path("/Backups"), ("/", "Backups"));
+    }
+
+    #[test]
+    fn split_path_trailing_slash() {
+        assert_eq!(split_path("/Backups/files/"), ("/Backups", "files"));
+    }
+
+    #[test]
+    fn split_path_no_leading_slash() {
+        assert_eq!(split_path("file.txt"), ("/", "file.txt"));
+    }
+
+    #[test]
+    fn check_op_status_success_zero() {
+        let v = serde_json::json!({"status": 0});
+        assert!(check_op_status(&v, "op", "/path").is_ok());
+    }
+
+    #[test]
+    fn check_op_status_success_one() {
+        let v = serde_json::json!({"status": 1});
+        assert!(check_op_status(&v, "op", "/path").is_ok());
+    }
+
+    #[test]
+    fn check_op_status_not_found() {
+        let v = serde_json::json!({"status": 5});
+        let err = check_op_status(&v, "rm", "/missing").unwrap_err();
+        assert!(err.to_string().contains("path not found"));
+    }
+
+    #[test]
+    fn check_op_status_permission_denied() {
+        let v = serde_json::json!({"status": 20});
+        let err = check_op_status(&v, "mkdir", "/locked").unwrap_err();
+        assert!(err.to_string().contains("permission denied"));
+    }
+
+    #[test]
+    fn check_op_status_already_exists() {
+        let v = serde_json::json!({"status": 2});
+        let err = check_op_status(&v, "cp", "/dst").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
 }
 
 #[cfg(test)]
