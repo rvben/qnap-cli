@@ -335,7 +335,7 @@ impl Config {
     fn dir() -> Result<PathBuf> {
         let dir = dirs::config_dir()
             .context("could not find config directory")?
-            .join("qnap-cli");
+            .join("qnap");
         Ok(dir)
     }
 
