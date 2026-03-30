@@ -280,7 +280,11 @@ async fn main() -> Result<()> {
                 FilesCommand::Mv { src, dst } => {
                     commands::files::mv(&client, src, dst).await?;
                 }
-                FilesCommand::Cp { src, dst, overwrite } => {
+                FilesCommand::Cp {
+                    src,
+                    dst,
+                    overwrite,
+                } => {
                     commands::files::cp(&client, src, dst, *overwrite).await?;
                 }
                 FilesCommand::Upload {

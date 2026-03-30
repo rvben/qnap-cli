@@ -484,10 +484,12 @@ pub async fn upload(
         .and_then(|n| n.to_str())
         .with_context(|| format!("invalid local path: {}", local.display()))?;
 
-    let data = std::fs::read(local)
-        .with_context(|| format!("failed to read {}", local.display()))?;
+    let data =
+        std::fs::read(local).with_context(|| format!("failed to read {}", local.display()))?;
 
-    let resp = client.upload_file(remote_dir, filename, data, overwrite).await?;
+    let resp = client
+        .upload_file(remote_dir, filename, data, overwrite)
+        .await?;
     check_op_status(&resp, "upload", filename)
 }
 
@@ -526,7 +528,10 @@ mod tests {
 
     #[test]
     fn split_path_deep() {
-        assert_eq!(split_path("/Backups/files/foo.txt"), ("/Backups/files", "foo.txt"));
+        assert_eq!(
+            split_path("/Backups/files/foo.txt"),
+            ("/Backups/files", "foo.txt")
+        );
     }
 
     #[test]
@@ -704,7 +709,9 @@ mod api_tests {
             .mount(&server)
             .await;
 
-        mv(&client, "/Public/old.txt", "/Public/new.txt").await.unwrap();
+        mv(&client, "/Public/old.txt", "/Public/new.txt")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -723,7 +730,9 @@ mod api_tests {
             .mount(&server)
             .await;
 
-        mv(&client, "/Source/file.txt", "/Dest/file.txt").await.unwrap();
+        mv(&client, "/Source/file.txt", "/Dest/file.txt")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -749,7 +758,9 @@ mod api_tests {
             .mount(&server)
             .await;
 
-        mv(&client, "/Source/old.txt", "/Dest/new.txt").await.unwrap();
+        mv(&client, "/Source/old.txt", "/Dest/new.txt")
+            .await
+            .unwrap();
     }
 
     // --- cp ---

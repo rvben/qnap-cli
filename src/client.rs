@@ -112,10 +112,7 @@ impl QnapClient {
         // All parameters go in the URL; only the file goes in the multipart body.
         // The progress param is the full destination path of the file being uploaded.
         let progress = format!("{}/{}", dest_path.trim_end_matches('/'), filename);
-        let base = format!(
-            "{}/cgi-bin/filemanager/utilRequest.cgi",
-            self.base_url
-        );
+        let base = format!("{}/cgi-bin/filemanager/utilRequest.cgi", self.base_url);
         let url = reqwest::Url::parse_with_params(
             &base,
             &[
@@ -139,7 +136,10 @@ impl QnapClient {
         let resp = self
             .send_checked(self.http.post(url).multipart(form), "file upload")
             .await?;
-        let body = resp.text().await.context("failed to read upload response")?;
+        let body = resp
+            .text()
+            .await
+            .context("failed to read upload response")?;
         serde_json::from_str(&body)
             .with_context(|| format!("failed to parse upload response: {}", snippet(&body)))
     }
@@ -155,10 +155,7 @@ impl QnapClient {
             .as_deref()
             .context("client is not authenticated; call login first")?;
 
-        let url = format!(
-            "{}/cgi-bin/filemanager/utilRequest.cgi",
-            self.base_url
-        );
+        let url = format!("{}/cgi-bin/filemanager/utilRequest.cgi", self.base_url);
 
         // source_total=1 is required; without it the server returns an empty zip archive.
         let resp = self
@@ -644,11 +641,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/cgi-bin/authLogin.cgi"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
-                "1",
-                "my-sid",
-                "",
-            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(auth_response("1", "my-sid", "")),
+            )
             .mount(&server)
             .await;
 
