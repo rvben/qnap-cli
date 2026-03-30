@@ -1,0 +1,24 @@
+[package]
+name = "qnap"
+version = "0.1.0"
+edition = "2024"
+description = "CLI for QNAP NAS management"
+authors = ["Ruben Jongejan <ruben.jongejan@gmail.com>"]
+
+[[bin]]
+name = "qnap"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+dirs = "6"
+tabled = "0.17"
+md5 = "0.7"
+urlencoding = "2"
+rpassword = "7"
