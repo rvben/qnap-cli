@@ -118,10 +118,11 @@ enum FilesCommand {
         path: String,
     },
 
-    /// Delete a file or directory
+    /// Delete one or more files or directories
     Rm {
-        /// Remote path to delete
-        path: String,
+        /// Remote paths to delete
+        #[arg(required = true)]
+        paths: Vec<String>,
     },
 
     /// Move or rename a file or directory
@@ -274,8 +275,10 @@ async fn main() -> Result<()> {
                 FilesCommand::Mkdir { path } => {
                     commands::files::mkdir(&client, path).await?;
                 }
-                FilesCommand::Rm { path } => {
-                    commands::files::rm(&client, path).await?;
+                FilesCommand::Rm { paths } => {
+                    for path in paths {
+                        commands::files::rm(&client, path).await?;
+                    }
                 }
                 FilesCommand::Mv { src, dst } => {
                     commands::files::mv(&client, src, dst).await?;
@@ -329,5 +332,16 @@ mod tests {
     #[test]
     fn global_host_override_parses_after_subcommand() {
         Cli::try_parse_from(["qnap", "info", "--host", "nas.local"]).unwrap();
+    }
+
+    #[test]
+    fn files_rm_requires_at_least_one_path() {
+        let err = Cli::try_parse_from(["qnap", "files", "rm"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn files_rm_accepts_multiple_paths() {
+        Cli::try_parse_from(["qnap", "files", "rm", "/Public/a.txt", "/Public/b.txt"]).unwrap();
     }
 }

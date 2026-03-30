@@ -45,8 +45,14 @@ qnap files stat /Public/example.txt --json
 | `status` | CPU, RAM, temperature, uptime |
 | `volumes` | Storage volumes and installed disks |
 | `shares` | Shared folders |
-| `files ls <PATH>` | List files and directories |
-| `files stat <PATH>` | Normalized metadata plus raw QNAP fields |
+| `files ls <PATH>` | List files and directories (`--all` to paginate, `--json`) |
+| `files stat <PATH>` | Normalized metadata plus raw QNAP fields (`--json`) |
+| `files mkdir <PATH>` | Create a directory |
+| `files rm <PATH>...` | Delete one or more files or directories |
+| `files mv <SRC> <DST>` | Move or rename a file or directory |
+| `files cp <SRC> <DST>` | Copy a file or directory (`--overwrite`) |
+| `files upload <LOCAL> <REMOTE_DIR>` | Upload a local file to the NAS (`--overwrite`) |
+| `files download <REMOTE> [LOCAL]` | Download a file from the NAS |
 | `dump [DIR]` | Save raw API responses for debugging |
 | `schema` | Print full command schema |
 
@@ -121,8 +127,8 @@ Environment variables override local files.
 
 | Platform | Config file | Credentials file |
 |---|---|---|
-| macOS | `~/Library/Application Support/qnap-cli/config.toml` | `~/Library/Application Support/qnap-cli/credentials.toml` |
-| Linux | `~/.config/qnap-cli/config.toml` | `~/.config/qnap-cli/credentials.toml` |
+| macOS | `~/Library/Application Support/qnap/config.toml` | `~/Library/Application Support/qnap/credentials.toml` |
+| Linux | `~/.config/qnap/config.toml` | `~/.config/qnap/credentials.toml` |
 
 ## Security
 
