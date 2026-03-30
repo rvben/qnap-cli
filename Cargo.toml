@@ -1,6 +1,6 @@
 [package]
 name = "qnap"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 rust-version = "1.85"
 description = "CLI for QNAP NAS management — human-friendly output and JSON mode for agent use"

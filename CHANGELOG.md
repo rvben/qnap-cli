@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.7](https://github.com/rvben/qnap-cli/compare/v0.1.6...v0.1.7) - 2026-03-30
+
+### Added
+
+- shell completions, files ls --recursive, typed exit codes ([c2bdab4](https://github.com/rvben/qnap-cli/commit/c2bdab4c56a9302644ab817b17734d5d269e6de6))
+
 ## [0.1.6](https://github.com/rvben/qnap-cli/compare/v0.1.5...v0.1.6) - 2026-03-30
 
 ### Added
