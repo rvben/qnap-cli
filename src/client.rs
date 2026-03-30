@@ -1,8 +1,28 @@
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, ClientBuilder};
+use reqwest::{Client, ClientBuilder, Response};
+use roxmltree::{Document, Node};
+use serde::Serialize;
 use std::time::Duration;
 
 use crate::config::Config;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Uptime {
+    pub days: u64,
+    pub hours: u64,
+    pub minutes: u64,
+    pub seconds: u64,
+}
+
+impl Uptime {
+    pub fn display(&self) -> String {
+        format!("{}d {}h {}m", self.days, self.hours, self.minutes)
+    }
+
+    pub fn total_seconds(&self) -> u64 {
+        self.days * 24 * 60 * 60 + self.hours * 60 * 60 + self.minutes * 60 + self.seconds
+    }
+}
 
 pub struct QnapClient {
     http: Client,
@@ -12,20 +32,126 @@ pub struct QnapClient {
 
 impl QnapClient {
     pub fn new(config: &Config) -> Result<Self> {
-        let host = config.host()?;
-        let insecure = config.insecure();
+        Self::build(config.host()?, config.insecure()?)
+    }
 
+    /// Authenticate with the NAS and cache the returned session ID.
+    pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let pwd = STANDARD.encode(password.as_bytes());
+        let url = format!("{}/cgi-bin/authLogin.cgi", self.base_url);
+
+        let resp = self
+            .send_checked(
+                self.http.post(&url).form(&[
+                    ("user", username),
+                    ("pwd", pwd.as_str()),
+                    ("serviceKey", "1"),
+                    ("client_app", "qnap-cli"),
+                ]),
+                "authentication request",
+            )
+            .await?;
+
+        let body = resp
+            .text()
+            .await
+            .context("failed to read authentication response")?;
+        let doc = parse_xml(&body)?;
+
+        let passed = xml_value(&doc, "authPassed").unwrap_or_default();
+        if passed != "1" {
+            let err = xml_value(&doc, "errorValue").unwrap_or_default();
+            bail!("authentication failed (errorValue={})", err);
+        }
+
+        let sid = xml_value(&doc, "authSid").ok_or_else(|| {
+            anyhow::anyhow!(
+                "login succeeded but no authSid in response\n\nRaw response:\n{}",
+                snippet(&body)
+            )
+        })?;
+
+        self.sid = Some(sid);
+        Ok(())
+    }
+
+    pub async fn get_cgi(&self, path: &str, params: &[(&str, &str)]) -> Result<String> {
+        let sid = self
+            .sid
+            .as_deref()
+            .context("client is not authenticated; call login first")?;
+        let mut all_params: Vec<(&str, &str)> = params.to_vec();
+        all_params.push(("sid", sid));
+
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .send_checked(
+                self.http.get(&url).query(&all_params),
+                &format!("request to {}", path),
+            )
+            .await?;
+
+        resp.text().await.context("failed to read response body")
+    }
+
+    pub async fn get_json<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<T> {
+        let sid = self
+            .sid
+            .as_deref()
+            .context("client is not authenticated; call login first")?;
+        let mut all_params: Vec<(&str, &str)> = params.to_vec();
+        all_params.push(("sid", sid));
+
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .send_checked(
+                self.http.get(&url).query(&all_params),
+                &format!("request to {}", path),
+            )
+            .await?;
+
+        let body = resp.text().await.context("failed to read JSON response")?;
+        serde_json::from_str::<T>(&body).with_context(|| {
+            format!(
+                "failed to parse JSON response from {}: {}",
+                path,
+                snippet(&body)
+            )
+        })
+    }
+
+    async fn send_checked(
+        &self,
+        request: reqwest::RequestBuilder,
+        context_label: &str,
+    ) -> Result<Response> {
+        let resp = request.send().await.map_err(map_transport_error)?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        bail!(
+            "{} failed with HTTP {}: {}",
+            context_label,
+            status,
+            snippet(&body)
+        );
+    }
+
+    fn build(base_url: String, insecure: bool) -> Result<Self> {
         let http = ClientBuilder::new()
             .danger_accept_invalid_certs(insecure)
             .cookie_store(true)
             .timeout(Duration::from_secs(30))
             .build()?;
-
-        let base_url = if host.starts_with("http") {
-            host.trim_end_matches('/').to_string()
-        } else {
-            format!("https://{}", host.trim_end_matches('/'))
-        };
 
         Ok(Self {
             http,
@@ -34,143 +160,107 @@ impl QnapClient {
         })
     }
 
-    /// Authenticate with the NAS. Returns the session ID prefix for display purposes.
-    pub async fn login(&mut self, username: &str, password: &str) -> Result<String> {
-        use base64::{Engine, engine::general_purpose::STANDARD};
-        let pwd = STANDARD.encode(password.as_bytes());
-        let url = format!("{}/cgi-bin/authLogin.cgi", self.base_url);
-
-        let resp = self
-            .http
-            .post(&url)
-            .form(&[
-                ("user", username),
-                ("pwd", pwd.as_str()),
-                ("serviceKey", "1"),
-                ("client_app", "qnap-cli"),
-            ])
-            .send()
-            .await
-            .map_err(|e| {
-                if e.to_string().contains("certificate") || e.to_string().contains("validity") {
-                    anyhow::anyhow!(
-                        "TLS certificate error — retry with `--insecure` to skip verification\n  ({})",
-                        e
-                    )
-                } else {
-                    anyhow::anyhow!("failed to reach NAS: {}", e)
-                }
-            })?;
-
-        let body = resp.text().await?;
-
-        let passed = extract_xml_value(&body, "authPassed").unwrap_or_default();
-        if passed != "1" {
-            let err = extract_xml_value(&body, "errorValue").unwrap_or_default();
-            bail!("authentication failed (errorValue={})", err);
-        }
-
-        let sid = extract_xml_value(&body, "authSid").ok_or_else(|| {
-            anyhow::anyhow!(
-                "login succeeded but no authSid in response\n\nRaw response:\n{}",
-                &body[..body.len().min(1000)]
-            )
-        })?;
-
-        self.sid = Some(sid.clone());
-        Ok(sid)
-    }
-
-    pub async fn get_cgi(&self, path: &str, params: &[(&str, &str)]) -> Result<String> {
-        let sid = self.sid.as_deref().unwrap_or_default();
-        let mut all_params: Vec<(&str, &str)> = params.to_vec();
-        all_params.push(("sid", sid));
-
-        let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .http
-            .get(&url)
-            .query(&all_params)
-            .send()
-            .await
-            .context("request failed")?;
-
-        resp.text().await.context("failed to read response")
-    }
-
-    pub async fn get_json<T: for<'de> serde::Deserialize<'de>>(
-        &self,
-        path: &str,
-        params: &[(&str, &str)],
-    ) -> Result<T> {
-        let sid = self.sid.as_deref().unwrap_or_default();
-        let mut all_params: Vec<(&str, &str)> = params.to_vec();
-        all_params.push(("sid", sid));
-
-        let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .http
-            .get(&url)
-            .query(&all_params)
-            .send()
-            .await
-            .context("request failed")?;
-
-        resp.json::<T>()
-            .await
-            .context("failed to parse JSON response")
+    #[cfg(test)]
+    fn new_for_test(base_url: String) -> Result<Self> {
+        Self::build(base_url.trim_end_matches('/').to_string(), false)
     }
 }
 
-/// Extract the text content of a simple XML tag, stripping any CDATA wrapper.
-///
-/// Handles both `<tag>value</tag>` and `<tag><![CDATA[value]]></tag>`.
+fn map_transport_error(err: reqwest::Error) -> anyhow::Error {
+    let message = err.to_string();
+    if message.contains("certificate") || message.contains("validity") {
+        anyhow::anyhow!(
+            "TLS certificate error — retry with `--insecure` to skip verification\n  ({})",
+            err
+        )
+    } else {
+        anyhow::anyhow!("failed to reach NAS: {}", err)
+    }
+}
+
+fn snippet(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "(empty response body)".to_string();
+    }
+
+    let mut value = trimmed.replace('\n', " ");
+    if value.len() > 400 {
+        value.truncate(400);
+        value.push_str("...");
+    }
+    value
+}
+
+pub fn parse_xml(body: &str) -> Result<Document<'_>> {
+    Document::parse(body).context("failed to parse XML response")
+}
+
+pub fn xml_value(doc: &Document<'_>, tag: &str) -> Option<String> {
+    doc.descendants()
+        .find(|node| node.has_tag_name(tag))
+        .map(node_text)
+}
+
+pub fn xml_value_in(node: Node<'_, '_>, tag: &str) -> Option<String> {
+    node.descendants()
+        .find(|child| child.has_tag_name(tag))
+        .map(node_text)
+}
+
+fn node_text(node: Node<'_, '_>) -> String {
+    node.text().unwrap_or_default().trim().to_string()
+}
+
 pub fn extract_xml_value(body: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = body.find(&open)? + open.len();
-    let end = body[start..].find(&close)?;
-    let raw = &body[start..start + end];
-    let value = raw
-        .strip_prefix("<![CDATA[")
-        .and_then(|s| s.strip_suffix("]]>"))
-        .unwrap_or(raw);
-    Some(value.to_string())
+    let doc = parse_xml(body).ok()?;
+    xml_value(&doc, tag)
 }
 
-/// Build a serde_json map from XML body and a list of (output_key, xml_tag) pairs.
 pub fn xml_fields_to_map(
-    body: &str,
+    doc: &Document<'_>,
     fields: &[(&str, &str)],
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
     for (key, tag) in fields {
-        if let Some(val) = extract_xml_value(body, tag) {
+        if let Some(val) = xml_value(doc, tag) {
             map.insert(key.to_string(), serde_json::Value::String(val));
         }
     }
     map
 }
 
-/// Format uptime from the three separate XML fields in sysinfo.
+pub fn parse_uptime(doc: &Document<'_>) -> Option<Uptime> {
+    let days = xml_value(doc, "uptime_day")?.parse().ok()?;
+    let hours = xml_value(doc, "uptime_hour")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let minutes = xml_value(doc, "uptime_min")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let seconds = xml_value(doc, "uptime_sec")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+
+    Some(Uptime {
+        days,
+        hours,
+        minutes,
+        seconds,
+    })
+}
+
+#[cfg(test)]
 pub fn format_uptime(body: &str) -> Option<String> {
-    let day = extract_xml_value(body, "uptime_day")?;
-    if day.is_empty() {
-        return None;
-    }
-    let hour = extract_xml_value(body, "uptime_hour").unwrap_or_default();
-    let min = extract_xml_value(body, "uptime_min").unwrap_or_default();
-    Some(format!("{}d {}h {}m", day, hour, min))
+    let doc = parse_xml(body).ok()?;
+    parse_uptime(&doc).map(|uptime| uptime.display())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string_contains, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    // ── extract_xml_value ────────────────────────────────────────────────────
 
     #[test]
     fn test_extract_xml_value_plain() {
@@ -212,7 +302,7 @@ mod tests {
     #[test]
     fn test_extract_xml_value_returns_first_match() {
         assert_eq!(
-            extract_xml_value("<foo>1</foo><foo>2</foo>", "foo"),
+            extract_xml_value("<QDocRoot><foo>1</foo><foo>2</foo></QDocRoot>", "foo"),
             Some("1".to_string())
         );
     }
@@ -235,45 +325,42 @@ mod tests {
         assert_eq!(extract_xml_value(body, "missing"), None);
     }
 
-    // ── xml_fields_to_map ────────────────────────────────────────────────────
-
     #[test]
     fn test_xml_fields_to_map_present_fields() {
         let body = "<hostname>MYNAS</hostname><version>5.1.0</version>";
+        let xml = format!("<QDocRoot>{}</QDocRoot>", body);
+        let doc = parse_xml(&xml).unwrap();
         let fields = &[("hostname", "hostname"), ("firmware", "version")];
-        let map = xml_fields_to_map(body, fields);
+        let map = xml_fields_to_map(&doc, fields);
         assert_eq!(map.get("hostname").and_then(|v| v.as_str()), Some("MYNAS"));
         assert_eq!(map.get("firmware").and_then(|v| v.as_str()), Some("5.1.0"));
     }
 
     #[test]
     fn test_xml_fields_to_map_missing_fields_are_skipped() {
-        let body = "<hostname>MYNAS</hostname>";
+        let doc = parse_xml("<QDocRoot><hostname>MYNAS</hostname></QDocRoot>").unwrap();
         let fields = &[("hostname", "hostname"), ("missing", "nothere")];
-        let map = xml_fields_to_map(body, fields);
+        let map = xml_fields_to_map(&doc, fields);
         assert!(map.contains_key("hostname"));
         assert!(!map.contains_key("missing"));
     }
 
     #[test]
     fn test_xml_fields_to_map_empty_body() {
-        let map = xml_fields_to_map("", &[("key", "tag")]);
+        let doc = parse_xml("<QDocRoot/>").unwrap();
+        let map = xml_fields_to_map(&doc, &[("key", "tag")]);
         assert!(map.is_empty());
     }
 
-    // ── format_uptime ────────────────────────────────────────────────────────
-
     #[test]
     fn test_format_uptime_all_fields() {
-        let body =
-            "<uptime_day>5</uptime_day><uptime_hour>12</uptime_hour><uptime_min>30</uptime_min>";
+        let body = "<QDocRoot><uptime_day>5</uptime_day><uptime_hour>12</uptime_hour><uptime_min>30</uptime_min><uptime_sec>9</uptime_sec></QDocRoot>";
         assert_eq!(format_uptime(body), Some("5d 12h 30m".to_string()));
     }
 
     #[test]
     fn test_format_uptime_zero_day() {
-        let body =
-            "<uptime_day>0</uptime_day><uptime_hour>0</uptime_hour><uptime_min>5</uptime_min>";
+        let body = "<QDocRoot><uptime_day>0</uptime_day><uptime_hour>0</uptime_hour><uptime_min>5</uptime_min></QDocRoot>";
         assert_eq!(format_uptime(body), Some("0d 0h 5m".to_string()));
     }
 
@@ -286,20 +373,10 @@ mod tests {
     fn test_format_uptime_empty_day_value() {
         assert_eq!(
             format_uptime(
-                "<uptime_day></uptime_day><uptime_hour>1</uptime_hour><uptime_min>0</uptime_min>"
+                "<QDocRoot><uptime_day></uptime_day><uptime_hour>1</uptime_hour><uptime_min>0</uptime_min></QDocRoot>"
             ),
             None
         );
-    }
-
-    // ── QnapClient::login (mock HTTP) ─────────────────────────────────────────
-
-    fn test_config(host: String) -> Config {
-        Config {
-            host: Some(host),
-            username: Some("admin".to_string()),
-            insecure: Some(false),
-        }
     }
 
     fn auth_response(passed: &str, sid: &str, error: &str) -> String {
@@ -322,10 +399,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = test_config(server.uri());
-        let mut client = QnapClient::new(&config).unwrap();
-        let sid = client.login("admin", "correct-password").await.unwrap();
-        assert_eq!(sid, "abc123def456");
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
+        client.login("admin", "correct-password").await.unwrap();
     }
 
     #[tokio::test]
@@ -337,21 +412,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = test_config(server.uri());
-        let mut client = QnapClient::new(&config).unwrap();
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
         let err = client.login("admin", "wrong-password").await.unwrap_err();
-        assert!(
-            err.to_string().contains("authentication failed"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(err.to_string().contains("authentication failed"));
         assert!(err.to_string().contains("errorValue=6"));
     }
 
     #[tokio::test]
     async fn test_login_missing_sid_in_response() {
         let server = MockServer::start().await;
-        // authPassed=1 but no authSid
         Mock::given(method("POST"))
             .and(path("/cgi-bin/authLogin.cgi"))
             .respond_with(
@@ -361,20 +430,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = test_config(server.uri());
-        let mut client = QnapClient::new(&config).unwrap();
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
         let err = client.login("admin", "pass").await.unwrap_err();
-        assert!(
-            err.to_string().contains("no authSid"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(err.to_string().contains("no authSid"));
     }
 
     #[tokio::test]
     async fn test_login_sends_base64_encoded_password() {
         use base64::{Engine, engine::general_purpose::STANDARD};
-        use wiremock::matchers::body_string_contains;
 
         let server = MockServer::start().await;
         let expected_pwd = STANDARD.encode("my-secret".as_bytes());
@@ -389,61 +452,70 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = test_config(server.uri());
-        let mut client = QnapClient::new(&config).unwrap();
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
         client.login("admin", "my-secret").await.unwrap();
     }
 
     #[tokio::test]
     async fn test_get_cgi_appends_sid() {
-        use wiremock::matchers::query_param;
-
         let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/authLogin.cgi"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
+                "1",
+                "test-sid-123",
+                "",
+            )))
+            .mount(&server)
+            .await;
+
         Mock::given(method("GET"))
             .and(path("/cgi-bin/management/manaRequest.cgi"))
             .and(query_param("sid", "test-sid-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("<ok/>"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<QDocRoot><ok/></QDocRoot>"))
             .expect(1)
             .mount(&server)
             .await;
 
-        // Directly set sid via login mock
-        let login_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
-                "1",
-                "test-sid-123",
-                "",
-            )))
-            .mount(&login_server)
-            .await;
-
-        let config = test_config(login_server.uri());
-        let mut client = QnapClient::new(&config).unwrap();
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
         client.login("admin", "pass").await.unwrap();
-
-        // Now make a CGI request to a different server that expects the SID
-        // We rebuild the client pointing at the second server to check the param
-        let config2 = test_config(server.uri());
-        let mut client2 = QnapClient::new(&config2).unwrap();
-        // Manually set sid by going through login first (we need a way to set it)
-        // Instead, test via a fresh mock that verifies the sid query param
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
-                "1",
-                "test-sid-123",
-                "",
-            )))
-            .mount(&server)
-            .await;
-        client2.login("admin", "pass").await.unwrap();
-        client2
+        client
             .get_cgi(
                 "/cgi-bin/management/manaRequest.cgi",
                 &[("subfunc", "sysinfo")],
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_cgi_surfaces_http_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/cgi-bin/authLogin.cgi"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(auth_response(
+                "1",
+                "test-sid-123",
+                "",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/cgi-bin/management/manaRequest.cgi"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("bad gateway"))
+            .mount(&server)
+            .await;
+
+        let mut client = QnapClient::new_for_test(server.uri()).unwrap();
+        client.login("admin", "pass").await.unwrap();
+        let err = client
+            .get_cgi(
+                "/cgi-bin/management/manaRequest.cgi",
+                &[("subfunc", "sysinfo")],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("HTTP 500"));
     }
 }
 
@@ -456,6 +528,7 @@ mod fixture_tests {
 
     #[test]
     fn fixture_sysinfo_required_fields_present() {
+        let doc = parse_xml(SYSINFO).unwrap();
         for tag in &[
             "modelName",
             "hostname",
@@ -467,7 +540,7 @@ mod fixture_tests {
             "uptime_min",
         ] {
             assert!(
-                extract_xml_value(SYSINFO, tag).is_some(),
+                xml_value(&doc, tag).is_some(),
                 "missing sysinfo field: {}",
                 tag
             );
@@ -476,59 +549,59 @@ mod fixture_tests {
 
     #[test]
     fn fixture_sysinfo_uptime_parses() {
-        let uptime = format_uptime(SYSINFO);
-        assert!(uptime.is_some(), "format_uptime returned None for fixture");
-        let s = uptime.unwrap();
-        assert!(
-            s.contains('d') && s.contains('h') && s.contains('m'),
-            "unexpected uptime format: {}",
-            s
-        );
+        let doc = parse_xml(SYSINFO).unwrap();
+        let uptime = parse_uptime(&doc).unwrap();
+        assert!(uptime.hours < 24, "hours out of range: {}", uptime.hours);
+        assert!(uptime.minutes < 60, "minutes out of range: {}", uptime.minutes);
+        assert!(uptime.seconds < 60, "seconds out of range: {}", uptime.seconds);
     }
 
     #[test]
     fn fixture_sysinfo_xml_fields_to_map() {
+        let doc = parse_xml(SYSINFO).unwrap();
         let fields = &[
             ("model", "modelName"),
             ("firmware", "version"),
             ("hostname", "hostname"),
         ];
-        let map = xml_fields_to_map(SYSINFO, fields);
+        let map = xml_fields_to_map(&doc, fields);
         assert_eq!(map.len(), 3, "expected 3 fields from sysinfo");
-        assert!(map["model"].as_str().unwrap().len() > 0);
-        assert!(map["firmware"].as_str().unwrap().len() > 0);
+        assert!(!map["model"].as_str().unwrap().is_empty());
+        assert!(!map["firmware"].as_str().unwrap().is_empty());
     }
 
     #[test]
     fn fixture_volumes_contains_rows() {
+        let doc = parse_xml(VOLUMES).unwrap();
         assert!(
-            VOLUMES.contains("<row>"),
+            doc.descendants().any(|node| node.has_tag_name("row")),
             "no <row> elements found in volumes fixture"
         );
     }
 
     #[test]
     fn fixture_volumes_row_fields_present() {
-        let mut remaining = VOLUMES;
-        let mut count = 0;
-        while let Some(start) = remaining.find("<row>") {
-            remaining = &remaining[start + "<row>".len()..];
-            let end = remaining.find("</row>").unwrap_or(remaining.len());
-            let block = &remaining[..end];
-            remaining = &remaining[end..];
-            count += 1;
+        let doc = parse_xml(VOLUMES).unwrap();
+        let rows: Vec<_> = doc
+            .descendants()
+            .filter(|node| node.has_tag_name("row"))
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "no <row> elements parsed from volumes fixture"
+        );
 
+        for (index, row) in rows.iter().enumerate() {
             assert!(
-                extract_xml_value(block, "vol_status").is_some(),
+                xml_value_in(*row, "vol_status").is_some(),
                 "row {} missing vol_status",
-                count
+                index + 1
             );
             assert!(
-                extract_xml_value(block, "vol_label").is_some(),
+                xml_value_in(*row, "vol_label").is_some(),
                 "row {} missing vol_label",
-                count
+                index + 1
             );
         }
-        assert!(count > 0, "no <row> elements parsed from volumes fixture");
     }
 }
