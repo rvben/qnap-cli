@@ -8,12 +8,15 @@ set -euo pipefail
 QNAP="${QNAP_BIN:-qnap}"
 SCRATCH="/Public/e2e-$(date +%s)"
 UPLOAD_SRC="$(mktemp)"
+UPLOAD_DIR="$(mktemp -d)"
 DOWNLOAD_DST="$(mktemp)"
+DOWNLOAD_DIR="$(mktemp -d)"
 PASS=0
 FAIL=0
 
 cleanup() {
     rm -f "$UPLOAD_SRC" "$DOWNLOAD_DST"
+    rm -rf "$UPLOAD_DIR" "$DOWNLOAD_DIR"
     "$QNAP" files rm "$SCRATCH" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -62,6 +65,8 @@ run         "shares"            "$QNAP" shares
 run_match   "config"            "host"   "$QNAP" config
 run_match   "config --json"     "\"host\"" "$QNAP" config --json
 run         "shares --json"     "$QNAP" shares --json
+run_match   "network"           "Adapter"  "$QNAP" network
+run_match   "network --json"    "\"adapters\"" "$QNAP" network --json
 
 echo ""
 echo "--- File operations ---"
@@ -98,6 +103,21 @@ if grep -q "hello from qnap e2e test" "$DOWNLOAD_DST"; then
     ok "files download (content)"
 else
     fail "files download (content)" "downloaded file content mismatch"
+fi
+
+# recursive upload
+mkdir -p "$UPLOAD_DIR/subdir"
+echo "root file" > "$UPLOAD_DIR/root.txt"
+echo "sub file"  > "$UPLOAD_DIR/subdir/sub.txt"
+run         "files upload -r"           "$QNAP" files upload -r "$UPLOAD_DIR" "$SCRATCH"
+run_match   "files upload -r (subdir)"  "subdir" "$QNAP" files ls "$SCRATCH/$(basename "$UPLOAD_DIR")" --json
+
+# recursive download
+run         "files download -r"         "$QNAP" files download -r "$SCRATCH/$(basename "$UPLOAD_DIR")" "$DOWNLOAD_DIR"
+if [ -f "$DOWNLOAD_DIR/$(basename "$UPLOAD_DIR")/root.txt" ] && [ -f "$DOWNLOAD_DIR/$(basename "$UPLOAD_DIR")/subdir/sub.txt" ]; then
+    ok "files download -r (structure)"
+else
+    fail "files download -r (structure)" "expected files not found in $DOWNLOAD_DIR"
 fi
 
 # find: search by pattern

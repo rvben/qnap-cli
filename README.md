@@ -45,14 +45,17 @@ qnap files stat /Public/example.txt --json
 | `status` | CPU, RAM, temperature, uptime |
 | `volumes` | Storage volumes and installed disks |
 | `shares` | Shared folders |
+| `network` | Network adapters, IPs, MACs, DNS (`--json`) |
+| `config` | Show saved host, username, TLS settings, and file paths (`--json`) |
 | `files ls <PATH>` | List files and directories (`--all` to paginate, `--json`) |
 | `files stat <PATH>` | Normalized metadata plus raw QNAP fields (`--json`) |
+| `files find <PATH> <PATTERN>` | Recursive glob search (`*.txt`, `backup*`) (`--json`) |
 | `files mkdir <PATH>` | Create a directory |
 | `files rm <PATH>...` | Delete one or more files or directories |
 | `files mv <SRC> <DST>` | Move or rename a file or directory |
 | `files cp <SRC> <DST>` | Copy a file or directory (`--overwrite`) |
-| `files upload <LOCAL> <REMOTE_DIR>` | Upload a local file to the NAS (`--overwrite`) |
-| `files download <REMOTE> [LOCAL]` | Download a file from the NAS |
+| `files upload <LOCAL> <REMOTE_DIR>` | Upload a file or directory (`--overwrite`, `-r` recursive) |
+| `files download <REMOTE> [LOCAL]` | Download a file or directory (`-r` recursive) |
 | `dump [DIR]` | Save raw API responses for debugging |
 | `schema` | Print full command schema |
 

@@ -82,6 +82,13 @@ enum Command {
         dir: String,
     },
 
+    /// Show network adapter information
+    Network {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show current saved configuration
     Config {
         /// Output as JSON
@@ -151,23 +158,29 @@ enum FilesCommand {
         overwrite: bool,
     },
 
-    /// Upload a local file to the NAS
+    /// Upload a local file or directory to the NAS
     Upload {
-        /// Local file to upload
+        /// Local file or directory to upload
         local: std::path::PathBuf,
         /// Remote directory to upload into (e.g. /Public)
         remote_dir: String,
         /// Overwrite if file already exists
         #[arg(long)]
         overwrite: bool,
+        /// Recursively upload a directory and its contents
+        #[arg(long, short = 'r')]
+        recursive: bool,
     },
 
-    /// Download a file from the NAS
+    /// Download a file or directory from the NAS
     Download {
-        /// Remote file path (e.g. /Public/file.txt)
+        /// Remote file or directory path (e.g. /Public/photos)
         remote: String,
-        /// Local path to save to (defaults to filename in current directory)
+        /// Local path to save to (defaults to name in current directory)
         local: Option<std::path::PathBuf>,
+        /// Recursively download a directory and its contents
+        #[arg(long, short = 'r')]
+        recursive: bool,
     },
 
     /// Search for files matching a pattern
@@ -249,6 +262,13 @@ async fn main() -> Result<()> {
             commands::config_show::run(&config, *json)?;
         }
 
+        Command::Network { json } => {
+            let config = apply_runtime_overrides(Config::load()?, &cli)?;
+            let password = password_override(cli.password_stdin)?;
+            let client = authenticated_client(&config, password.as_deref()).await?;
+            commands::network::run(&client, *json).await?;
+        }
+
         Command::Info { json } => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
@@ -317,11 +337,33 @@ async fn main() -> Result<()> {
                     local,
                     remote_dir,
                     overwrite,
+                    recursive,
                 } => {
-                    commands::files::upload(&client, local, remote_dir, *overwrite).await?;
+                    if *recursive {
+                        commands::files::upload_recursive(&client, local, remote_dir, *overwrite)
+                            .await?;
+                    } else {
+                        commands::files::upload(&client, local, remote_dir, *overwrite).await?;
+                    }
                 }
-                FilesCommand::Download { remote, local } => {
-                    commands::files::download(&client, remote, local.as_deref()).await?;
+                FilesCommand::Download {
+                    remote,
+                    local,
+                    recursive,
+                } => {
+                    if *recursive {
+                        let local_path = local.clone().unwrap_or_else(|| {
+                            let name = remote
+                                .trim_end_matches('/')
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or("download");
+                            std::path::PathBuf::from(name)
+                        });
+                        commands::files::download_recursive(&client, remote, &local_path).await?;
+                    } else {
+                        commands::files::download(&client, remote, local.as_deref()).await?;
+                    }
                 }
                 FilesCommand::Find {
                     path,

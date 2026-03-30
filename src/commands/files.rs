@@ -596,6 +596,144 @@ pub async fn download(client: &QnapClient, remote: &str, local: Option<&Path>) -
     Ok(())
 }
 
+/// Create a remote directory, treating "already exists" as success.
+async fn mkdir_idempotent(client: &QnapClient, path: &str) -> Result<()> {
+    let (parent, name) = split_path(path);
+    if name.is_empty() {
+        return Ok(());
+    }
+    let resp: serde_json::Value = client
+        .get_json(
+            "/cgi-bin/filemanager/utilRequest.cgi",
+            &[
+                ("func", "createdir"),
+                ("dest_path", parent),
+                ("dest_folder", name),
+            ],
+        )
+        .await?;
+    match resp.get("status").and_then(|s| s.as_u64()) {
+        Some(0) | Some(1) | Some(2) | None => Ok(()),
+        Some(5) => bail!("mkdir: path not found: {}", path),
+        Some(20) => bail!("mkdir: permission denied: {}", path),
+        Some(code) => bail!("mkdir failed for {}: status={}", path, code),
+    }
+}
+
+pub async fn upload_recursive(
+    client: &QnapClient,
+    local: &Path,
+    remote_dir: &str,
+    overwrite: bool,
+) -> Result<()> {
+    if !local.is_dir() {
+        return upload(client, local, remote_dir, overwrite).await;
+    }
+
+    // Queue of (local_dir, remote_dir) pairs to process
+    let mut queue: std::collections::VecDeque<(std::path::PathBuf, String)> =
+        std::collections::VecDeque::new();
+    queue.push_back((
+        local.to_path_buf(),
+        remote_dir.trim_end_matches('/').to_string(),
+    ));
+
+    let mut files_uploaded = 0u64;
+
+    while let Some((local_dir, remote)) = queue.pop_front() {
+        let entries = std::fs::read_dir(&local_dir)
+            .with_context(|| format!("failed to read directory {}", local_dir.display()))?;
+
+        for entry in entries {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in {}", local_dir.display()))?;
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .with_context(|| format!("invalid filename: {}", path.display()))?
+                .to_string();
+            let remote_path = format!("{}/{}", remote, name);
+
+            if path.is_dir() {
+                mkdir_idempotent(client, &remote_path).await?;
+                queue.push_back((path, remote_path));
+            } else if path.is_file() {
+                eprintln!("  uploading {}", remote_path);
+                let data = std::fs::read(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                let resp = client.upload_file(&remote, &name, data, overwrite).await?;
+                check_op_status(&resp, "upload", &name)?;
+                files_uploaded += 1;
+            }
+        }
+    }
+
+    eprintln!("  {} file(s) uploaded", files_uploaded);
+    Ok(())
+}
+
+pub async fn download_recursive(client: &QnapClient, remote: &str, local: &Path) -> Result<()> {
+    let remote = remote.trim_end_matches('/');
+
+    // Create the local root directory
+    std::fs::create_dir_all(local)
+        .with_context(|| format!("failed to create directory {}", local.display()))?;
+
+    // Queue of (remote_dir, local_dir) pairs
+    let mut queue: std::collections::VecDeque<(String, std::path::PathBuf)> =
+        std::collections::VecDeque::new();
+    queue.push_back((remote.to_string(), local.to_path_buf()));
+
+    let mut files_downloaded = 0u64;
+
+    while let Some((remote_dir, local_dir)) = queue.pop_front() {
+        let mut start = 0;
+        loop {
+            let page = fetch_page(client, &remote_dir, start).await?;
+            let page_len = page.len();
+
+            for item in page {
+                let local_path = local_dir.join(&item.name);
+                let remote_path = format!("{}/{}", remote_dir, item.name);
+
+                if item.entry_type == "dir" {
+                    std::fs::create_dir_all(&local_path).with_context(|| {
+                        format!("failed to create directory {}", local_path.display())
+                    })?;
+                    queue.push_back((remote_path, local_path));
+                } else {
+                    eprintln!("  downloading {}", remote_path);
+                    let (source_path, source_file) = split_path(&remote_path);
+                    let resp = client.get_file_response(source_path, source_file).await?;
+                    let mut file = std::fs::File::create(&local_path)
+                        .with_context(|| format!("failed to create {}", local_path.display()))?;
+                    let mut stream = resp.bytes_stream();
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.context("error reading download stream")?;
+                        std::io::Write::write_all(&mut file, &chunk).with_context(|| {
+                            format!("failed to write to {}", local_path.display())
+                        })?;
+                    }
+                    files_downloaded += 1;
+                }
+            }
+
+            if page_len < PAGE_SIZE {
+                break;
+            }
+            start += PAGE_SIZE;
+        }
+    }
+
+    eprintln!(
+        "  {} file(s) downloaded to {}",
+        files_downloaded,
+        local.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

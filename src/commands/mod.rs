@@ -3,6 +3,7 @@ pub mod dump;
 pub mod files;
 pub mod info;
 pub mod login;
+pub mod network;
 pub mod schema;
 pub mod shares;
 pub mod status;
