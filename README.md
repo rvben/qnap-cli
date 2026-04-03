@@ -1,5 +1,7 @@
 # qnap
 
+[![codecov](https://codecov.io/gh/rvben/qnap-cli/graph/badge.svg)](https://codecov.io/gh/rvben/qnap-cli)
+
 A CLI for QNAP NAS management. It is designed for both interactive use and automation: human-friendly tables by default, stable JSON contracts on inspection commands, and a `schema` command for agent introspection.
 
 Supported platforms: Linux and macOS.
