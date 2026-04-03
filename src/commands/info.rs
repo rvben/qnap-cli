@@ -112,10 +112,8 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
 
     let info = build_info(&body)?;
 
-    if !json {
-        if let Some(note) = info.firmware.as_deref().and_then(firmware_compat_note) {
-            eprintln!("Note: {}", note);
-        }
+    if !json && let Some(note) = info.firmware.as_deref().and_then(firmware_compat_note) {
+        eprintln!("Note: {}", note);
     }
 
     if json {

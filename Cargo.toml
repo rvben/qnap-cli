@@ -2,7 +2,7 @@
 name = "qnap"
 version = "0.1.7"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 description = "CLI for QNAP NAS management — human-friendly output and JSON mode for agent use"
 authors = ["Ruben Jongejan <ruben.jongejan@gmail.com>"]
 license = "MIT"

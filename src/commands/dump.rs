@@ -52,10 +52,10 @@ fn anonymize_json_owners(body: &str) -> String {
     if let Some(entries) = v.get_mut("datas").and_then(|d| d.as_array_mut()) {
         for entry in entries {
             for field in ["owner", "group"] {
-                if let Some(val) = entry.get_mut(field) {
-                    if val.as_str().map(|s| !generic.contains(&s)).unwrap_or(false) {
-                        *val = serde_json::Value::String("user".to_string());
-                    }
+                if let Some(val) = entry.get_mut(field)
+                    && val.as_str().map(|s| !generic.contains(&s)).unwrap_or(false)
+                {
+                    *val = serde_json::Value::String("user".to_string());
                 }
             }
         }
