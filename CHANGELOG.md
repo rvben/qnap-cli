@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.10](https://github.com/rvben/qnap-cli/compare/v0.1.9...v0.1.10) - 2026-04-03
+
+### Added
+
+- **login**: add interactive prompts, credential validation, and next steps ([c085846](https://github.com/rvben/qnap-cli/commit/c0858462b2bf49e65d01bccc0ff4c35ef697572b))
+
 ## [0.1.9](https://github.com/rvben/qnap-cli/compare/v0.1.8...v0.1.9) - 2026-04-03
 
 ## [0.1.8](https://github.com/rvben/qnap-cli/compare/v0.1.7...v0.1.8) - 2026-04-03
