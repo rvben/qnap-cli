@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::output::print_kv;
+use crate::output::{OutputFormat, print_kv};
 
 #[derive(Serialize)]
 struct ConfigOutput {
@@ -13,12 +13,12 @@ struct ConfigOutput {
     credentials_file: String,
 }
 
-pub fn run(config: &Config, json: bool) -> Result<()> {
+pub fn run(config: &Config, fmt: OutputFormat) -> Result<()> {
     let config_file = Config::path()?.display().to_string();
     let credentials_file = Config::credentials_path()?.display().to_string();
     let tls_verify = !config.insecure.unwrap_or(false);
 
-    if json {
+    if fmt.is_json() {
         let output = ConfigOutput {
             host: config.host.clone(),
             username: config.username.clone(),

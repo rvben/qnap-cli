@@ -9,6 +9,7 @@ use clap_complete::Shell;
 
 use client::QnapClient;
 use config::{Config, normalize_host_input, read_password_from_stdin};
+use output::OutputFormat;
 
 #[derive(Debug, Parser)]
 #[command(name = "qnap", about = "QNAP NAS management CLI", version)]
@@ -33,8 +34,26 @@ struct Cli {
     #[arg(long, global = true)]
     password_stdin: bool,
 
+    /// Output format (auto, text, json)
+    #[arg(long, short = 'o', global = true, default_value = "auto")]
+    output: OutputFormat,
+
+    /// Machine-readable JSON output (alias for --output json)
+    #[arg(long, global = true, hide = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    fn effective_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.output
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -43,31 +62,27 @@ enum Command {
     Login,
 
     /// Show system information (model, firmware, hostname, uptime)
-    Info {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Info,
 
     /// Show system resource usage (CPU, RAM, temperature)
-    Status {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
 
     /// List storage volumes and disks
-    Volumes {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Volumes,
 
     /// List shared folders
     Shares {
-        /// Output as JSON
+        /// Maximum number of shares to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+
+        /// Number of shares to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
+        /// Comma-separated list of fields to include in JSON output
         #[arg(long)]
-        json: bool,
+        fields: Option<String>,
     },
 
     /// File operations
@@ -84,18 +99,10 @@ enum Command {
     },
 
     /// Show network adapter information
-    Network {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Network,
 
     /// Show current saved configuration
-    Config {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Config,
 
     /// Print command schema for agent use
     Schema,
@@ -122,25 +129,33 @@ enum FilesCommand {
         #[arg(long, short = 'r')]
         recursive: bool,
 
-        /// Output as JSON
+        /// Maximum number of items to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+
+        /// Number of items to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
+        /// Comma-separated list of fields to include in JSON output
         #[arg(long)]
-        json: bool,
+        fields: Option<String>,
     },
 
     /// Show metadata for a file or directory
     Stat {
         /// Remote path
         path: String,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
     },
 
     /// Create a directory
     Mkdir {
         /// Remote path to create (e.g. /Public/newdir)
         path: String,
+
+        /// Confirm without prompting (required when not in a TTY)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Delete one or more files or directories
@@ -148,6 +163,10 @@ enum FilesCommand {
         /// Remote paths to delete
         #[arg(required = true)]
         paths: Vec<String>,
+
+        /// Confirm without prompting (required when not in a TTY)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Move or rename a file or directory
@@ -156,6 +175,10 @@ enum FilesCommand {
         src: String,
         /// Destination remote path
         dst: String,
+
+        /// Confirm without prompting (required when not in a TTY)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Copy a file or directory
@@ -167,6 +190,10 @@ enum FilesCommand {
         /// Overwrite if destination exists
         #[arg(long)]
         overwrite: bool,
+
+        /// Confirm without prompting (required when not in a TTY)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Upload a local file or directory to the NAS
@@ -181,6 +208,10 @@ enum FilesCommand {
         /// Recursively upload a directory and its contents
         #[arg(long, short = 'r')]
         recursive: bool,
+
+        /// Confirm without prompting (required when not in a TTY)
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Download a file or directory from the NAS
@@ -200,9 +231,6 @@ enum FilesCommand {
         path: String,
         /// Glob pattern to match filenames (e.g. "*.txt", "backup*")
         pattern: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -248,40 +276,104 @@ async fn authenticated_client(
     Ok(client)
 }
 
-/// Map an error to a specific exit code for scripting.
-///
-/// 1 = general error, 2 = not found, 3 = permission denied,
-/// 4 = authentication failure, 5 = network/connection error.
-fn exit_code(err: &anyhow::Error) -> i32 {
+/// Map an error to a kind string and exit code for scripting.
+fn error_kind_and_code(err: &anyhow::Error) -> (&'static str, i32) {
     let msg = format!("{:#}", err);
     if msg.contains("failed to reach NAS") || msg.contains("error sending request") {
-        return 5;
+        return ("network_error", 5);
     }
     if msg.contains("authentication failed")
         || msg.contains("authPassed")
         || msg.contains("Invalid login")
     {
-        return 4;
+        return ("auth", 4);
     }
     if msg.contains("permission denied") {
-        return 3;
+        return ("permission_denied", 3);
     }
     if msg.contains("path not found") || msg.contains("not found") {
-        return 2;
+        return ("not_found", 2);
     }
-    1
+    ("general", 1)
+}
+
+/// Require explicit confirmation for destructive operations when not in a TTY.
+///
+/// When stdin is not a terminal and --yes was not passed, emits a structured
+/// error envelope and exits with code 2.
+fn require_confirmation(operation: &str, yes: bool) {
+    use std::io::IsTerminal;
+    if yes || std::io::stdin().is_terminal() {
+        return;
+    }
+    let envelope = serde_json::json!({
+        "error": {
+            "kind": "confirmation_required",
+            "message": format!("{} requires confirmation", operation),
+            "hint": "Re-run with --yes to confirm."
+        }
+    });
+    eprintln!("{}", envelope);
+    std::process::exit(2);
 }
 
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("Error: {:#}", err);
-        std::process::exit(exit_code(&err));
+        let (kind, code) = error_kind_and_code(&err);
+        let envelope = serde_json::json!({
+            "error": {
+                "kind": kind,
+                "message": format!("{:#}", err)
+            }
+        });
+        eprintln!("{}", envelope);
+        std::process::exit(code);
     }
 }
 
 async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|clap_err| {
+        // Emit help/version messages to stdout (clap convention) but wrap
+        // real parse errors as a structured envelope on stderr so piped
+        // consumers get a machine-readable signal instead of prose.
+        use clap::error::ErrorKind;
+        match clap_err.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                // Let clap print help/version normally then exit cleanly.
+                clap_err.exit();
+            }
+            _ => {
+                let msg = clap_err.to_string();
+                // Strip ANSI escapes from clap's colored error text.
+                let clean: String = {
+                    let mut s = String::with_capacity(msg.len());
+                    let mut in_escape = false;
+                    for ch in msg.chars() {
+                        if ch == '\x1b' {
+                            in_escape = true;
+                        } else if in_escape {
+                            if ch == 'm' {
+                                in_escape = false;
+                            }
+                        } else {
+                            s.push(ch);
+                        }
+                    }
+                    s
+                };
+                let envelope = serde_json::json!({
+                    "error": {
+                        "kind": "general",
+                        "message": clean.trim()
+                    }
+                });
+                eprintln!("{}", envelope);
+                std::process::exit(clap_err.exit_code());
+            }
+        }
+    });
+    let fmt = cli.effective_format();
 
     match &cli.command {
         Command::Login => {
@@ -303,44 +395,48 @@ async fn run() -> Result<()> {
             clap_complete::generate(*shell, &mut Cli::command(), "qnap", &mut std::io::stdout());
         }
 
-        Command::Config { json } => {
+        Command::Config => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
-            commands::config_show::run(&config, *json)?;
+            commands::config_show::run(&config, fmt)?;
         }
 
-        Command::Network { json } => {
+        Command::Network => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
-            commands::network::run(&client, *json).await?;
+            commands::network::run(&client, fmt).await?;
         }
 
-        Command::Info { json } => {
+        Command::Info => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
-            commands::info::run(&client, *json).await?;
+            commands::info::run(&client, fmt).await?;
         }
 
-        Command::Status { json } => {
+        Command::Status => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
-            commands::status::run(&client, *json).await?;
+            commands::status::run(&client, fmt).await?;
         }
 
-        Command::Volumes { json } => {
+        Command::Volumes => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
-            commands::volumes::run(&client, *json).await?;
+            commands::volumes::run(&client, fmt).await?;
         }
 
-        Command::Shares { json } => {
+        Command::Shares {
+            limit,
+            offset,
+            fields,
+        } => {
             let config = apply_runtime_overrides(Config::load()?, &cli)?;
             let password = password_override(cli.password_stdin)?;
             let client = authenticated_client(&config, password.as_deref()).await?;
-            commands::shares::run(&client, *json).await?;
+            commands::shares::run(&client, fmt, *limit, *offset, fields.as_deref()).await?;
         }
 
         Command::Dump { dir } => {
@@ -359,33 +455,49 @@ async fn run() -> Result<()> {
                     path,
                     all,
                     recursive,
-                    json,
+                    limit,
+                    offset,
+                    fields,
                 } => {
                     if *recursive {
-                        commands::files::list_recursive(&client, path, *json).await?;
+                        commands::files::list_recursive(&client, path, fmt).await?;
                     } else {
-                        commands::files::list(&client, path, *all, *json).await?;
+                        commands::files::list(
+                            &client,
+                            path,
+                            *all,
+                            fmt,
+                            *limit,
+                            *offset,
+                            fields.as_deref(),
+                        )
+                        .await?;
                     }
                 }
-                FilesCommand::Stat { path, json } => {
-                    commands::files::stat(&client, path, *json).await?;
+                FilesCommand::Stat { path } => {
+                    commands::files::stat(&client, path, fmt).await?;
                 }
-                FilesCommand::Mkdir { path } => {
+                FilesCommand::Mkdir { path, yes } => {
+                    require_confirmation("files mkdir", *yes);
                     commands::files::mkdir(&client, path).await?;
                 }
-                FilesCommand::Rm { paths } => {
+                FilesCommand::Rm { paths, yes } => {
+                    require_confirmation("files rm", *yes);
                     for path in paths {
                         commands::files::rm(&client, path).await?;
                     }
                 }
-                FilesCommand::Mv { src, dst } => {
+                FilesCommand::Mv { src, dst, yes } => {
+                    require_confirmation("files mv", *yes);
                     commands::files::mv(&client, src, dst).await?;
                 }
                 FilesCommand::Cp {
                     src,
                     dst,
                     overwrite,
+                    yes,
                 } => {
+                    require_confirmation("files cp", *yes);
                     commands::files::cp(&client, src, dst, *overwrite).await?;
                 }
                 FilesCommand::Upload {
@@ -393,7 +505,9 @@ async fn run() -> Result<()> {
                     remote_dir,
                     overwrite,
                     recursive,
+                    yes,
                 } => {
+                    require_confirmation("files upload", *yes);
                     if *recursive {
                         commands::files::upload_recursive(&client, local, remote_dir, *overwrite)
                             .await?;
@@ -420,12 +534,8 @@ async fn run() -> Result<()> {
                         commands::files::download(&client, remote, local.as_deref()).await?;
                     }
                 }
-                FilesCommand::Find {
-                    path,
-                    pattern,
-                    json,
-                } => {
-                    commands::files::find(&client, path, pattern, *json).await?;
+                FilesCommand::Find { path, pattern } => {
+                    commands::files::find(&client, path, pattern, fmt).await?;
                 }
             }
         }
@@ -485,26 +595,80 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_network_error() {
+    fn output_flag_parses_auto() {
+        let cli = Cli::try_parse_from(["qnap", "--output", "auto", "info"]).unwrap();
+        assert_eq!(cli.output, super::OutputFormat::Auto);
+    }
+
+    #[test]
+    fn output_flag_parses_json() {
+        let cli = Cli::try_parse_from(["qnap", "--output", "json", "info"]).unwrap();
+        assert_eq!(cli.output, super::OutputFormat::Json);
+    }
+
+    #[test]
+    fn output_short_flag_parses() {
+        let cli = Cli::try_parse_from(["qnap", "-o", "text", "info"]).unwrap();
+        assert_eq!(cli.output, super::OutputFormat::Text);
+    }
+
+    #[test]
+    fn hidden_json_flag_sets_effective_format_to_json() {
+        let cli = Cli::try_parse_from(["qnap", "--json", "info"]).unwrap();
+        assert_eq!(cli.effective_format(), super::OutputFormat::Json);
+    }
+
+    #[test]
+    fn files_yes_flag_parses_for_rm() {
+        Cli::try_parse_from(["qnap", "files", "rm", "--yes", "/Public/a.txt"]).unwrap();
+    }
+
+    #[test]
+    fn files_yes_flag_parses_for_mkdir() {
+        Cli::try_parse_from(["qnap", "files", "mkdir", "--yes", "/Public/newdir"]).unwrap();
+    }
+
+    #[test]
+    fn shares_limit_offset_parse() {
+        let cli =
+            Cli::try_parse_from(["qnap", "shares", "--limit", "50", "--offset", "10"]).unwrap();
+        if let super::Command::Shares { limit, offset, .. } = cli.command {
+            assert_eq!(limit, 50);
+            assert_eq!(offset, 10);
+        } else {
+            panic!("wrong command variant");
+        }
+    }
+
+    #[test]
+    fn error_kind_network_error() {
         let err = anyhow::anyhow!("failed to reach NAS: error sending request");
-        assert_eq!(super::exit_code(&err), 5);
+        let (kind, code) = super::error_kind_and_code(&err);
+        assert_eq!(kind, "network_error");
+        assert_eq!(code, 5);
     }
 
     #[test]
-    fn exit_code_permission_denied() {
+    fn error_kind_permission_denied() {
         let err = anyhow::anyhow!("rm: permission denied: /Public/locked");
-        assert_eq!(super::exit_code(&err), 3);
+        let (kind, code) = super::error_kind_and_code(&err);
+        assert_eq!(kind, "permission_denied");
+        assert_eq!(code, 3);
     }
 
     #[test]
-    fn exit_code_not_found() {
+    fn error_kind_not_found() {
         let err = anyhow::anyhow!("path not found: /Public/missing.txt");
-        assert_eq!(super::exit_code(&err), 2);
+        let (kind, code) = super::error_kind_and_code(&err);
+        assert_eq!(kind, "not_found");
+        assert_eq!(code, 2);
     }
 
     #[test]
-    fn exit_code_general_error() {
+    fn error_kind_general() {
         let err = anyhow::anyhow!("something unexpected happened");
-        assert_eq!(super::exit_code(&err), 1);
+        let (kind, code) = super::error_kind_and_code(&err);
+        assert_eq!(kind, "general");
+        assert_eq!(code, 1);
     }
 }

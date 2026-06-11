@@ -3,7 +3,7 @@ use roxmltree::Document;
 use serde::Serialize;
 
 use crate::client::{QnapClient, parse_xml, xml_value, xml_value_in};
-use crate::output::{DiskRow, VolumeRow, fmt_temp, print_volumes};
+use crate::output::{DiskRow, OutputFormat, VolumeRow, fmt_temp, print_volumes};
 
 fn vol_status_label(code: &str) -> &'static str {
     match code.trim() {
@@ -126,7 +126,7 @@ fn human_rows(report: &VolumesOutput) -> (Vec<VolumeRow>, Vec<DiskRow>) {
     (volumes, disks)
 }
 
-pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
+pub async fn run(client: &QnapClient, fmt: OutputFormat) -> Result<()> {
     let vol_body = client
         .get_cgi(
             "/cgi-bin/disk/disk_manage.cgi",
@@ -145,7 +145,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
     let sys_doc = parse_xml(&sys_body)?;
     let report = build_report(&vol_doc, &sys_doc);
 
-    if report.volumes.is_empty() && !json {
+    if report.volumes.is_empty() && !fmt.is_json() {
         let has_rows = vol_doc.descendants().any(|node| node.has_tag_name("row"));
         if has_rows {
             eprintln!("Warning: found <row> elements but could not parse volume fields.");
@@ -156,7 +156,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         eprintln!("  Run `qnap dump ./debug/` and open a GitHub issue with the output.");
     }
 
-    if json {
+    if fmt.is_json() {
         println!(
             "{}",
             serde_json::to_string_pretty(&report).unwrap_or_default()

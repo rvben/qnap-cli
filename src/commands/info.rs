@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::client::{QnapClient, Uptime, parse_uptime, parse_xml, xml_fields_to_map};
-use crate::output::print_kv;
+use crate::output::{OutputFormat, print_kv};
 
 #[derive(Debug, Serialize)]
 struct UptimeOutput {
@@ -102,7 +102,7 @@ fn build_info(body: &str) -> Result<InfoOutput> {
     })
 }
 
-pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
+pub async fn run(client: &QnapClient, fmt: OutputFormat) -> Result<()> {
     let body = client
         .get_cgi(
             "/cgi-bin/management/manaRequest.cgi",
@@ -112,11 +112,13 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
 
     let info = build_info(&body)?;
 
-    if !json && let Some(note) = info.firmware.as_deref().and_then(firmware_compat_note) {
+    if !fmt.is_json()
+        && let Some(note) = info.firmware.as_deref().and_then(firmware_compat_note)
+    {
         eprintln!("Note: {}", note);
     }
 
-    if json {
+    if fmt.is_json() {
         println!(
             "{}",
             serde_json::to_string_pretty(&info).unwrap_or_default()

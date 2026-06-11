@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::client::QnapClient;
-use crate::output::{FileRow, print_files, print_kv};
+use crate::output::{FileRow, OutputFormat, print_files, print_kv};
 
 const PAGE_SIZE: usize = 200;
 
@@ -214,19 +214,35 @@ fn glob_match(pattern: &[u8], name: &[u8]) -> bool {
     }
 }
 
-pub async fn list(client: &QnapClient, path: &str, all: bool, json: bool) -> Result<()> {
-    let mut items: Vec<FileListItem> = Vec::new();
+pub async fn list(
+    client: &QnapClient,
+    path: &str,
+    all: bool,
+    fmt: OutputFormat,
+    limit: usize,
+    offset: usize,
+    _fields: Option<&str>,
+) -> Result<()> {
+    #[derive(Serialize)]
+    struct PagedFiles<'a> {
+        items: &'a [FileListItem],
+        total: usize,
+        limit: usize,
+        offset: usize,
+    }
+
+    let mut all_items: Vec<FileListItem> = Vec::new();
     let mut start = 0usize;
 
     loop {
         let page = fetch_page(client, path, start).await?;
         let page_len = page.len();
-        items.extend(page);
+        all_items.extend(page);
 
         if page_len < PAGE_SIZE || !all {
             if !all && page_len == PAGE_SIZE {
                 eprintln!(
-                    "  (showing first {} results — use --all to fetch everything)",
+                    "  (showing first {} results - use --all to fetch everything)",
                     PAGE_SIZE
                 );
             }
@@ -236,20 +252,31 @@ pub async fn list(client: &QnapClient, path: &str, all: bool, json: bool) -> Res
         start += PAGE_SIZE;
     }
 
-    if json {
+    let total = all_items.len();
+    let page_start = offset.min(total);
+    let page_end = (offset + limit).min(total);
+    let page = &all_items[page_start..page_end];
+
+    if fmt.is_json() {
+        let paged = PagedFiles {
+            items: page,
+            total,
+            limit,
+            offset,
+        };
         println!(
             "{}",
-            serde_json::to_string_pretty(&items).unwrap_or_default()
+            serde_json::to_string_pretty(&paged).unwrap_or_default()
         );
         return Ok(());
     }
 
-    let rows: Vec<FileRow> = items.iter().map(human_row).collect();
+    let rows: Vec<FileRow> = page.iter().map(human_row).collect();
     print_files(&rows);
     Ok(())
 }
 
-pub async fn list_recursive(client: &QnapClient, root: &str, json: bool) -> Result<()> {
+pub async fn list_recursive(client: &QnapClient, root: &str, fmt: OutputFormat) -> Result<()> {
     #[derive(Serialize)]
     struct RecursiveEntry {
         path: String,
@@ -272,7 +299,7 @@ pub async fn list_recursive(client: &QnapClient, root: &str, json: bool) -> Resu
                 if item.entry_type == "dir" {
                     queue.push_back(full_path.clone());
                 }
-                if json {
+                if fmt.is_json() {
                     results.push(RecursiveEntry {
                         path: full_path,
                         entry_type: item.entry_type,
@@ -290,13 +317,13 @@ pub async fn list_recursive(client: &QnapClient, root: &str, json: bool) -> Resu
         }
     }
 
-    if json {
+    if fmt.is_json() {
         println!("{}", serde_json::to_string_pretty(&results)?);
     }
     Ok(())
 }
 
-pub async fn find(client: &QnapClient, root: &str, pattern: &str, json: bool) -> Result<()> {
+pub async fn find(client: &QnapClient, root: &str, pattern: &str, fmt: OutputFormat) -> Result<()> {
     #[derive(Serialize)]
     struct FindResult {
         path: String,
@@ -320,7 +347,7 @@ pub async fn find(client: &QnapClient, root: &str, pattern: &str, json: bool) ->
             for item in page {
                 let full_path = format!("{}/{}", dir, item.name);
                 if glob_match(pat, item.name.as_bytes()) {
-                    if json {
+                    if fmt.is_json() {
                         results.push(FindResult {
                             path: full_path.clone(),
                             entry_type: item.entry_type.clone(),
@@ -343,14 +370,14 @@ pub async fn find(client: &QnapClient, root: &str, pattern: &str, json: bool) ->
         }
     }
 
-    if json {
+    if fmt.is_json() {
         println!("{}", serde_json::to_string_pretty(&results)?);
     }
 
     Ok(())
 }
 
-pub async fn stat(client: &QnapClient, path: &str, json: bool) -> Result<()> {
+pub async fn stat(client: &QnapClient, path: &str, fmt: OutputFormat) -> Result<()> {
     let resp: serde_json::Value = client
         .get_json(
             "/cgi-bin/filemanager/utilRequest.cgi",
@@ -373,7 +400,7 @@ pub async fn stat(client: &QnapClient, path: &str, json: bool) -> Result<()> {
         .unwrap_or(&resp);
     let stat = stat_output(path, entry);
 
-    if json {
+    if fmt.is_json() {
         println!(
             "{}",
             serde_json::to_string_pretty(&stat).unwrap_or_default()

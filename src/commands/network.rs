@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::client::{QnapClient, extract_xml_value, parse_xml};
-use crate::output::print_kv;
+use crate::output::{OutputFormat, print_kv};
 
 #[derive(Debug, Serialize)]
 pub struct NicInfo {
@@ -85,7 +85,7 @@ fn parse_dns(body: &str) -> Vec<String> {
         .collect()
 }
 
-pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
+pub async fn run(client: &QnapClient, fmt: OutputFormat) -> Result<()> {
     let body = client
         .get_cgi(
             "/cgi-bin/management/manaRequest.cgi",
@@ -96,7 +96,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
     let nics = parse_nics(&body);
     let dns = parse_dns(&body);
 
-    if json {
+    if fmt.is_json() {
         let output = NetworkOutput {
             adapters: nics,
             dns,

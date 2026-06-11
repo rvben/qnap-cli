@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::client::{QnapClient, Uptime, parse_uptime, parse_xml, xml_value};
-use crate::output::{fmt_temp, print_kv};
+use crate::output::{OutputFormat, fmt_temp, print_kv};
 
 #[derive(Debug, Serialize, PartialEq)]
 struct UptimeOutput {
@@ -75,7 +75,7 @@ fn build_status(body: &str) -> Result<StatusOutput> {
     })
 }
 
-pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
+pub async fn run(client: &QnapClient, fmt: OutputFormat) -> Result<()> {
     let body = client
         .get_cgi(
             "/cgi-bin/management/manaRequest.cgi",
@@ -85,7 +85,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
 
     let status = build_status(&body)?;
 
-    if json {
+    if fmt.is_json() {
         println!(
             "{}",
             serde_json::to_string_pretty(&status).unwrap_or_default()

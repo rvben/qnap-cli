@@ -2,6 +2,28 @@ use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use tabled::{Table, Tabled};
 
+/// Output format selected by the user.
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
+pub enum OutputFormat {
+    /// Emit JSON when piped, human text in a terminal.
+    Auto,
+    /// Always emit human-readable text.
+    Text,
+    /// Always emit machine-readable JSON.
+    Json,
+}
+
+impl OutputFormat {
+    /// Returns true when this invocation should produce JSON output.
+    pub fn is_json(self) -> bool {
+        match self {
+            OutputFormat::Json => true,
+            OutputFormat::Text => false,
+            OutputFormat::Auto => !std::io::stdout().is_terminal(),
+        }
+    }
+}
+
 fn use_color() -> bool {
     std::env::var("NO_COLOR").is_err() && std::io::stdout().is_terminal()
 }
@@ -16,7 +38,7 @@ pub fn print_kv(pairs: &[(String, String)]) {
 
 /// Format a temperature value with color coding for terminal output.
 ///
-/// Green below 45°C, yellow 45–59°C, red 60°C and above.
+/// Green below 45°C, yellow 45-59°C, red 60°C and above.
 pub fn fmt_temp(temp_str: &str) -> String {
     let Ok(t) = temp_str.trim().parse::<f64>() else {
         return temp_str.to_string();
@@ -125,7 +147,7 @@ pub struct FileRow {
 
 pub fn print_files(rows: &[FileRow]) {
     println!("{}", Table::new(rows));
-    println!("  {} item(s)", rows.len());
+    eprintln!("  {} item(s)", rows.len());
 }
 
 #[cfg(test)]

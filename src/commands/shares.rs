@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::client::QnapClient;
-use crate::output::{ShareRow, print_shares};
+use crate::output::{OutputFormat, ShareRow, print_shares};
 
 #[derive(Debug, Deserialize)]
 struct ShareEntry {
@@ -18,7 +18,21 @@ struct ShareOutput {
     items_count: Option<u64>,
 }
 
-pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
+#[derive(Serialize)]
+struct PagedShares<'a> {
+    items: &'a [ShareOutput],
+    total: usize,
+    limit: usize,
+    offset: usize,
+}
+
+pub async fn run(
+    client: &QnapClient,
+    fmt: OutputFormat,
+    limit: usize,
+    offset: usize,
+    _fields: Option<&str>,
+) -> Result<()> {
     let entries: Vec<ShareEntry> = client
         .get_json(
             "/cgi-bin/filemanager/utilRequest.cgi",
@@ -26,7 +40,7 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         )
         .await?;
 
-    let rows: Vec<ShareOutput> = entries
+    let all_rows: Vec<ShareOutput> = entries
         .into_iter()
         .map(|entry| ShareOutput {
             name: entry.text,
@@ -35,15 +49,28 @@ pub async fn run(client: &QnapClient, json: bool) -> Result<()> {
         })
         .collect();
 
-    if json {
+    let total = all_rows.len();
+    let page: &[ShareOutput] = {
+        let start = offset.min(total);
+        let end = (offset + limit).min(total);
+        &all_rows[start..end]
+    };
+
+    if fmt.is_json() {
+        let paged = PagedShares {
+            items: page,
+            total,
+            limit,
+            offset,
+        };
         println!(
             "{}",
-            serde_json::to_string_pretty(&rows).unwrap_or_default()
+            serde_json::to_string_pretty(&paged).unwrap_or_default()
         );
         return Ok(());
     }
 
-    let table_rows: Vec<ShareRow> = rows
+    let table_rows: Vec<ShareRow> = page
         .iter()
         .map(|row| ShareRow {
             name: row.name.clone(),
