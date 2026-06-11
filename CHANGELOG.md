@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.1.11](https://github.com/rvben/qnap-cli/compare/v0.1.10...v0.1.11) - 2026-06-11
+
+### Added
+
+- bring qnap CLI to clispec v0.2 compliance ([cbf0215](https://github.com/rvben/qnap-cli/commit/cbf0215c2efec50aec38208bb158aea100f52af2))
+
 ## [0.1.10](https://github.com/rvben/qnap-cli/compare/v0.1.9...v0.1.10) - 2026-04-03
 
 ### Added
