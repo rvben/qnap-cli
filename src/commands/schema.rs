@@ -282,7 +282,6 @@ pub fn build_schema() -> Value {
             {"kind": "permission_denied", "exit_code": 3, "retryable": false, "description": "The authenticated user lacks access to the resource."},
             {"kind": "network_error", "exit_code": 5, "retryable": true, "description": "Failed to reach the NAS. Check host and network connectivity."},
             {"kind": "confirmation_required", "exit_code": 2, "retryable": false, "description": "A destructive operation requires --yes confirmation when not in a TTY."},
-            {"kind": "conflict", "exit_code": 2, "retryable": false, "description": "The operation would overwrite or conflict with an existing resource."},
             {"kind": "general", "exit_code": 1, "retryable": false, "description": "Unexpected error."}
         ]
     })
@@ -374,13 +373,19 @@ mod tests {
     }
 
     #[test]
-    fn conflict_error_kind_is_declared() {
+    fn conflict_error_kind_is_not_declared() {
+        // The code maps "destination already exists" to the general error kind (exit 1).
+        // There is no reachable path that emits a structured conflict kind, so the
+        // schema must not advertise one.
         let schema = build_schema();
         let errors = schema["errors"].as_array().unwrap();
         let has_conflict = errors
             .iter()
             .any(|e| e["kind"].as_str() == Some("conflict"));
-        assert!(has_conflict, "errors array must include a 'conflict' kind");
+        assert!(
+            !has_conflict,
+            "errors array must not include a 'conflict' kind — it is unreachable in the current code"
+        );
     }
 
     #[test]
