@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 pub fn build_schema() -> Value {
-    json!({
-        "clispec": "0.2",
+    let mut schema = json!({
+        "clispec": "0.3",
         "name": "qnap",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "CLI for QNAP NAS management.",
@@ -130,7 +130,7 @@ pub fn build_schema() -> Value {
             {
                 "name": "dump",
                 "description": "Save raw API responses for debugging and compatibility reporting.",
-                "mutating": false,
+                "mutating": true,
                 "args": [
                     {"name": "dir", "type": "string", "required": false, "default": "./qnap-dump", "description": "Directory to write response files into."}
                 ],
@@ -138,7 +138,7 @@ pub fn build_schema() -> Value {
             },
             {
                 "name": "schema",
-                "description": "Print command schema for agent use. Conforms to clispec v0.2.",
+                "description": "Print the clispec v0.3 command schema for agent use.",
                 "mutating": false,
                 "args": [],
                 "output_fields": []
@@ -252,7 +252,7 @@ pub fn build_schema() -> Value {
             {
                 "name": "files download",
                 "description": "Download a file or directory from the NAS.",
-                "mutating": false,
+                "mutating": true,
                 "args": [
                     {"name": "remote", "type": "string", "required": true, "description": "Remote file or directory path, e.g. /Public/photos."},
                     {"name": "local", "type": "string", "required": false, "description": "Local path to save to (defaults to name in current directory)."},
@@ -266,7 +266,10 @@ pub fn build_schema() -> Value {
                 "mutating": false,
                 "args": [
                     {"name": "path", "type": "string", "required": true, "description": "Remote path to search under, e.g. /Public."},
-                    {"name": "pattern", "type": "string", "required": true, "description": "Glob pattern to match filenames, e.g. *.txt or backup*."}
+                    {"name": "pattern", "type": "string", "required": true, "description": "Glob pattern to match filenames, e.g. *.txt or backup*."},
+                    {"name": "--limit", "type": "integer", "required": false, "default": 100, "description": "Maximum number of matches to return."},
+                    {"name": "--offset", "type": "integer", "required": false, "default": 0, "description": "Number of matches to skip."},
+                    {"name": "--fields", "type": "string", "required": false, "description": "Comma-separated fields to include in JSON output."}
                 ],
                 "output_fields": [
                     {"name": "path", "type": "string"},
@@ -284,7 +287,103 @@ pub fn build_schema() -> Value {
             {"kind": "confirmation_required", "exit_code": 2, "retryable": false, "description": "A destructive operation requires --yes confirmation when not in a TTY."},
             {"kind": "general", "exit_code": 1, "retryable": false, "description": "Unexpected error."}
         ]
-    })
+    });
+    enrich_v0_3(&mut schema);
+    schema
+}
+
+fn enrich_v0_3(schema: &mut Value) {
+    schema["output"] = json!({"tty": "text", "piped": "json"});
+    let Some(commands) = schema["commands"].as_array_mut() else {
+        return;
+    };
+    for command in commands {
+        let Some(object) = command.as_object_mut() else {
+            continue;
+        };
+        let name = object["name"].as_str().unwrap_or_default().to_string();
+        let mutating = object["mutating"].as_bool().unwrap_or(false);
+        object.insert(
+            "effects".into(),
+            json!(if !mutating {
+                "read_only"
+            } else if matches!(name.as_str(), "login" | "files mkdir" | "files rm") {
+                "idempotent"
+            } else {
+                "non_idempotent"
+            }),
+        );
+
+        if name == "completions" {
+            object.remove("output_fields");
+            object.insert("output_kind".into(), json!("opaque"));
+            object.insert("media_type".into(), json!("text/plain"));
+            continue;
+        }
+
+        let unbounded = matches!(name.as_str(), "shares" | "files ls" | "files find");
+        object.insert(
+            "cardinality".into(),
+            json!(if unbounded { "unbounded" } else { "bounded" }),
+        );
+        if unbounded {
+            object.insert(
+                "pagination".into(),
+                json!({"style":"offset","limit_arg":"--limit","offset_arg":"--offset"}),
+            );
+            object.insert("fields_arg".into(), json!("--fields"));
+        }
+        if matches!(
+            name.as_str(),
+            "files mkdir" | "files rm" | "files mv" | "files cp" | "files upload"
+        ) {
+            object.insert("confirmation_bypass_arg".into(), json!("--yes"));
+        }
+        if name == "config" {
+            object.insert("example".into(), json!({"args":["config"]}));
+        }
+        if name == "schema" {
+            object.remove("output_fields");
+            object.insert("cardinality".into(), json!("single"));
+            object.insert(
+                "stdout_schema".into(),
+                json!({"$ref":"https://clispec.dev/schema/v0.3.json"}),
+            );
+        }
+
+        if let Some(fields) = object
+            .get_mut("output_fields")
+            .and_then(Value::as_array_mut)
+        {
+            for field in fields {
+                let Some(field) = field.as_object_mut() else {
+                    continue;
+                };
+                if let Some(base) = field
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .and_then(|kind| kind.strip_suffix(" | null"))
+                    .map(str::to_owned)
+                {
+                    field.insert("type".into(), json!(base));
+                    field.insert("nullable".into(), json!(true));
+                }
+                if field.get("type").and_then(Value::as_str) == Some("array")
+                    && !field.contains_key("items")
+                {
+                    let item_type = if field.get("name").and_then(Value::as_str) == Some("dns") {
+                        "string"
+                    } else {
+                        "object"
+                    };
+                    field.insert("items".into(), json!({"type": item_type}));
+                }
+            }
+        }
+        if !object.contains_key("output_fields") && !object.contains_key("stdout_schema") {
+            object.insert("stdout_schema".into(), json!({}));
+        }
+    }
 }
 
 pub fn run() {
@@ -299,14 +398,14 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    const CLISPEC_V02_SCHEMA: &str = include_str!("../../tests/fixtures/clispec-v0.2.json");
+    const CLISPEC_V03_SCHEMA: &str = include_str!("../../tests/fixtures/clispec-v0.3.json");
 
     #[test]
-    fn schema_validates_against_clispec_v02() {
-        let meta_schema: serde_json::Value = serde_json::from_str(CLISPEC_V02_SCHEMA)
-            .expect("clispec v0.2 fixture is not valid JSON");
+    fn schema_validates_against_clispec_v03() {
+        let meta_schema: serde_json::Value = serde_json::from_str(CLISPEC_V03_SCHEMA)
+            .expect("clispec v0.3 fixture is not valid JSON");
         let validator = jsonschema::validator_for(&meta_schema)
-            .expect("clispec v0.2 fixture is not a valid JSON Schema");
+            .expect("clispec v0.3 fixture is not a valid JSON Schema");
 
         let output = build_schema();
         let errors: Vec<String> = validator
@@ -315,7 +414,7 @@ mod tests {
             .collect();
         if !errors.is_empty() {
             panic!(
-                "schema output failed clispec v0.2 validation:\n{}",
+                "schema output failed clispec v0.3 validation:\n{}",
                 errors.join("\n")
             );
         }
@@ -324,7 +423,7 @@ mod tests {
     #[test]
     fn schema_has_required_top_level_fields() {
         let schema = build_schema();
-        assert_eq!(schema["clispec"], "0.2", "clispec field must be '0.2'");
+        assert_eq!(schema["clispec"], "0.3", "clispec field must be '0.3'");
         assert_eq!(schema["name"], "qnap", "name field must be 'qnap'");
         assert!(
             schema["version"].as_str().is_some_and(|v| !v.is_empty()),

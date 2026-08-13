@@ -231,6 +231,15 @@ enum FilesCommand {
         path: String,
         /// Glob pattern to match filenames (e.g. "*.txt", "backup*")
         pattern: String,
+        /// Maximum number of matches to return
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Number of matches to skip
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Comma-separated fields to include in JSON output
+        #[arg(long)]
+        fields: Option<String>,
     },
 }
 
@@ -534,8 +543,23 @@ async fn run() -> Result<()> {
                         commands::files::download(&client, remote, local.as_deref()).await?;
                     }
                 }
-                FilesCommand::Find { path, pattern } => {
-                    commands::files::find(&client, path, pattern, fmt).await?;
+                FilesCommand::Find {
+                    path,
+                    pattern,
+                    limit,
+                    offset,
+                    fields,
+                } => {
+                    commands::files::find(
+                        &client,
+                        path,
+                        pattern,
+                        fmt,
+                        *limit,
+                        *offset,
+                        fields.as_deref(),
+                    )
+                    .await?;
                 }
             }
         }

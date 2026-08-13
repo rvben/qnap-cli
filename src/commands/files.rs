@@ -323,7 +323,15 @@ pub async fn list_recursive(client: &QnapClient, root: &str, fmt: OutputFormat) 
     Ok(())
 }
 
-pub async fn find(client: &QnapClient, root: &str, pattern: &str, fmt: OutputFormat) -> Result<()> {
+pub async fn find(
+    client: &QnapClient,
+    root: &str,
+    pattern: &str,
+    fmt: OutputFormat,
+    limit: usize,
+    offset: usize,
+    fields: Option<&str>,
+) -> Result<()> {
     #[derive(Serialize)]
     struct FindResult {
         path: String,
@@ -347,16 +355,12 @@ pub async fn find(client: &QnapClient, root: &str, pattern: &str, fmt: OutputFor
             for item in page {
                 let full_path = format!("{}/{}", dir, item.name);
                 if glob_match(pat, item.name.as_bytes()) {
-                    if fmt.is_json() {
-                        results.push(FindResult {
-                            path: full_path.clone(),
-                            entry_type: item.entry_type.clone(),
-                            size_bytes: item.size_bytes,
-                            modified: item.modified.clone(),
-                        });
-                    } else {
-                        println!("{}", full_path);
-                    }
+                    results.push(FindResult {
+                        path: full_path.clone(),
+                        entry_type: item.entry_type.clone(),
+                        size_bytes: item.size_bytes,
+                        modified: item.modified.clone(),
+                    });
                 }
                 if item.entry_type == "dir" {
                     queue.push_back(full_path);
@@ -370,8 +374,41 @@ pub async fn find(client: &QnapClient, root: &str, pattern: &str, fmt: OutputFor
         }
     }
 
+    let total = results.len();
+    let page: Vec<_> = results.into_iter().skip(offset).take(limit).collect();
     if fmt.is_json() {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        let selected: Option<Vec<_>> = fields.map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|field| !field.is_empty())
+                .collect()
+        });
+        let items: Vec<serde_json::Value> = page
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<serde_json::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|mut value| {
+                if let (Some(selected), Some(object)) = (&selected, value.as_object_mut()) {
+                    object.retain(|key, _| selected.contains(&key.as_str()));
+                }
+                value
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset
+            }))?
+        );
+    } else {
+        for result in page {
+            println!("{}", result.path);
+        }
     }
 
     Ok(())
