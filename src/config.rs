@@ -574,30 +574,32 @@ mod tests {
 
     #[test]
     fn parse_bool_env_accepts_strict_values() {
+        const TEST_VAR: &str = "QNAP_TEST_INSECURE_ACCEPTS_STRICT_VALUES";
         unsafe {
-            std::env::set_var("QNAP_INSECURE", "true");
+            std::env::set_var(TEST_VAR, "true");
         }
-        assert_eq!(parse_bool_env("QNAP_INSECURE").unwrap(), Some(true));
+        assert_eq!(parse_bool_env(TEST_VAR).unwrap(), Some(true));
 
         unsafe {
-            std::env::set_var("QNAP_INSECURE", "0");
+            std::env::set_var(TEST_VAR, "0");
         }
-        assert_eq!(parse_bool_env("QNAP_INSECURE").unwrap(), Some(false));
+        assert_eq!(parse_bool_env(TEST_VAR).unwrap(), Some(false));
 
         unsafe {
-            std::env::remove_var("QNAP_INSECURE");
+            std::env::remove_var(TEST_VAR);
         }
     }
 
     #[test]
     fn parse_bool_env_rejects_ambiguous_values() {
+        const TEST_VAR: &str = "QNAP_TEST_INSECURE_REJECTS_AMBIGUOUS_VALUES";
         unsafe {
-            std::env::set_var("QNAP_INSECURE", "maybe");
+            std::env::set_var(TEST_VAR, "maybe");
         }
-        let err = parse_bool_env("QNAP_INSECURE").unwrap_err();
+        let err = parse_bool_env(TEST_VAR).unwrap_err();
         assert!(err.to_string().contains("must be one of"));
         unsafe {
-            std::env::remove_var("QNAP_INSECURE");
+            std::env::remove_var(TEST_VAR);
         }
     }
 
