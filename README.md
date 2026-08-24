@@ -173,3 +173,8 @@ Tested against QTS 5.1.x and 5.2.x. The core authentication and file manager API
 ## License
 
 MIT
+
+## Releasing
+
+Vership owns versioning, changelog generation, release commits, and tags. See
+[the release runbook](docs/releases.md) for the verified workflow and recovery policy.
