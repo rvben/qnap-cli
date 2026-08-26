@@ -30,6 +30,10 @@ jsonschema = { version = "0.29", default-features = false }
 name = "qnap"
 path = "src/main.rs"
 
+[[bin]]
+name = "qnap-cli"
+path = "src/qnap_cli_alias.rs"
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

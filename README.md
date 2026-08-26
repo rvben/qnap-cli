@@ -10,7 +10,12 @@ Supported platforms: Linux and macOS.
 
 ```sh
 cargo install qnap
+
+# Or run from PyPI without installing
+uvx qnap-cli --help
 ```
+
+The PyPI package provides both `qnap` and `qnap-cli` as executable names.
 
 Or build from source:
 
