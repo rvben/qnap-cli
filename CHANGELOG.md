@@ -4,16 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.14](https://github.com/rvben/qnap-cli/compare/v0.1.13...v0.1.14) - 2026-08-26
 
+### Added
 
+- **packaging**: add package-named launcher ([d5221cf](https://github.com/rvben/qnap-cli/commit/d5221cf9471485762de5f9d22859ecd6f3af06b3))
 
+### Fixed
 
-
-
-
-
-
-
+- **release**: use package version in dry runs ([ef84bdf](https://github.com/rvben/qnap-cli/commit/ef84bdf47d23229fb1e24d7c44ab56e2619b2dd5))
+- **ci**: install pinned Rust components ([b8e0312](https://github.com/rvben/qnap-cli/commit/b8e03126311a8add6a632dcba8b4d22d7f510b87))
+- **release**: scope assets to the current tag ([33cba2a](https://github.com/rvben/qnap-cli/commit/33cba2ad34bb42464dda46e9661ba3d30fe9ae09))
 
 ## [0.1.12](https://github.com/rvben/qnap-cli/compare/v0.1.11...v0.1.12) - 2026-06-20
 
