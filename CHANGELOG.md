@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.15](https://github.com/rvben/qnap-cli/compare/v0.1.14...v0.1.15) - 2026-09-27
+
+### Fixed
+
+- **deps**: update rustls to 0.23.45 for RUSTSEC-2026-0285 ([7667354](https://github.com/rvben/qnap-cli/commit/7667354056465a14547b0a0fcd92c9ce3f4cf88f))
+
 ## [0.1.14](https://github.com/rvben/qnap-cli/compare/v0.1.13...v0.1.14) - 2026-08-26
 
 ### Added
