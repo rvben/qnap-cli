@@ -8,6 +8,14 @@ Supported platforms: Linux and macOS.
 
 ## Installation
 
+### Homebrew
+
+```sh
+brew install rvben/tap/qnap-cli
+```
+
+### Other installation methods
+
 ```sh
 cargo install qnap
 
